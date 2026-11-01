@@ -1,42 +1,68 @@
-import { FormEvent, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { play, search, type Release } from "../api/client";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { search, type Release } from "../api/client";
+import { loadSearchSession, saveSearchSession } from "../state/searchSession";
 
 export default function SearchPage() {
-  const [query, setQuery] = useState("назад в будущее");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlQ = searchParams.get("q")?.trim() ?? "";
+  const [query, setQuery] = useState(urlQ || "назад в будущее");
   const [source, setSource] = useState<string | null>(null);
   const [releases, setReleases] = useState<Release[]>([]);
   const [loading, setLoading] = useState(false);
-  const [playingId, setPlayingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
+  const lastFetchedQ = useRef<string | null>(null);
 
-  async function onSearch(e: FormEvent) {
-    e.preventDefault();
+  const runSearch = useCallback(async (q: string) => {
+    const trimmed = q.trim();
+    if (!trimmed) return;
     setLoading(true);
     setError(null);
     try {
-      const data = await search(query.trim());
+      const data = await search(trimmed);
       setSource(data.source);
       setReleases(data.releases);
+      saveSearchSession({
+        query: trimmed,
+        source: data.source,
+        releases: data.releases,
+        fetchedAt: Date.now(),
+      });
+      lastFetchedQ.current = trimmed;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  useEffect(() => {
+    if (!urlQ) return;
+    setQuery(urlQ);
+    if (lastFetchedQ.current === urlQ) return;
+    const cached = loadSearchSession();
+    if (cached && cached.query === urlQ && cached.releases.length > 0) {
+      setSource(cached.source);
+      setReleases(cached.releases);
+      lastFetchedQ.current = urlQ;
+      return;
+    }
+    void runSearch(urlQ);
+  }, [urlQ, runSearch]);
+
+  async function onSearch(e: FormEvent) {
+    e.preventDefault();
+    const trimmed = query.trim();
+    if (!trimmed) return;
+    setSearchParams({ q: trimmed });
   }
 
-  async function onWatch(r: Release) {
-    setPlayingId(r.external_id);
+  function onWatch(r: Release) {
     setError(null);
-    try {
-      const res = await play(r.provider, r.external_id);
-      navigate("/player", { state: res });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setPlayingId(null);
-    }
+    navigate(
+      `/watch/prepare/${r.provider}/${encodeURIComponent(r.external_id)}`,
+    );
   }
 
   return (
@@ -83,12 +109,8 @@ export default function SearchPage() {
                   {r.seeds ?? "?"}/{r.peers ?? "?"}
                 </td>
                 <td>
-                  <button
-                    type="button"
-                    disabled={playingId === r.external_id}
-                    onClick={() => onWatch(r)}
-                  >
-                    {playingId === r.external_id ? "…" : "Смотреть"}
+                  <button type="button" onClick={() => onWatch(r)}>
+                    Смотреть
                   </button>
                 </td>
               </tr>

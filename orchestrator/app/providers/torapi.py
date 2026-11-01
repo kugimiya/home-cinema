@@ -74,9 +74,30 @@ class TorAPIClient:
             )
             r.raise_for_status()
             data = r.json()
+        data = _normalize_detail_payload(data, external_id)
         if isinstance(data, dict) and data.get("Result"):
             raise httpx.HTTPError(data.get("Result", "Not found"))
         return _detail_from_torapi(provider, external_id, data)
+
+
+def _normalize_detail_payload(data: Any, external_id: str) -> dict[str, Any]:
+    """TorAPI returns a dict for some trackers and a one-item list for RuTor."""
+    if isinstance(data, list):
+        if not data:
+            raise httpx.HTTPError("Not found")
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            item_id = item.get("Id")
+            if item_id is not None and str(item_id) == str(external_id):
+                return item
+        first = data[0]
+        if isinstance(first, dict):
+            return first
+        raise httpx.HTTPError("Unexpected TorAPI response")
+    if isinstance(data, dict):
+        return data
+    raise httpx.HTTPError("Unexpected TorAPI response")
 
 
 def _item_to_release(provider: Provider, item: dict[str, Any]) -> Optional[Release]:

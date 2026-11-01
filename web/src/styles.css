@@ -1,6 +1,6 @@
 :root {
   font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-  color: #e8eaed;
+  color: #ffffff;
   background: #0f1115;
 }
 
@@ -25,9 +25,86 @@ a {
 nav {
   display: flex;
   gap: 1rem;
-  margin-bottom: 1.5rem;
+  margin-bottom: 0.75rem;
   padding-bottom: 0.75rem;
   border-bottom: 1px solid #2a2f3a;
+}
+
+.service-status-bar {
+  margin-bottom: 1.25rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid #2a2f3a;
+  border-radius: 8px;
+  background: #141820;
+  font-size: 0.82rem;
+}
+
+.service-status-error {
+  margin: 0 0 0.35rem;
+  font-size: 0.8rem;
+}
+
+.service-status-row {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
+  gap: 0.5rem 0.65rem;
+  align-items: center;
+  padding: 0.2rem 0;
+}
+
+.service-status-row + .service-status-row {
+  border-top: 1px solid #252932;
+  margin-top: 0.25rem;
+  padding-top: 0.35rem;
+}
+
+.status-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-ok {
+  background: #22c55e;
+}
+
+.status-busy {
+  background: #eab308;
+}
+
+.status-degraded {
+  background: #f97316;
+}
+
+.status-down {
+  background: #ef4444;
+}
+
+.status-unknown {
+  background: #6b7280;
+}
+
+.service-status-label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.service-status-activity {
+  color: #9ca3af;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.service-restart-btn {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+}
+
+.service-restart-placeholder {
+  width: 5.5rem;
 }
 
 nav a.active {
@@ -51,12 +128,26 @@ button {
   border: none;
   border-radius: 8px;
   padding: 0.45rem 0.85rem;
-  background: #3b82f6;
+  background: #1a2438;
+  color: #fff;
+}
+
+button:hover,
+button:focus-visible {
+  background: #243552;
   color: #fff;
 }
 
 button.secondary {
-  background: #374151;
+  background: transparent;
+  border: 1px solid #2a2f3a;
+  color: #fff;
+}
+
+button.secondary:hover,
+button.secondary:focus-visible {
+  background: #1a2438;
+  color: #fff;
 }
 
 button.danger {
@@ -93,6 +184,35 @@ th {
   font-size: 0.85rem;
 }
 
+.hls-timeline {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  margin: 0.75rem 0 0.35rem;
+}
+
+.hls-timeline-time {
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  min-width: 3.5rem;
+  color: #9ca3af;
+}
+
+.hls-timeline-time:last-child {
+  text-align: right;
+}
+
+.hls-timeline-range {
+  flex: 1;
+  min-width: 0;
+  accent-color: #3b82f6;
+}
+
+.hls-timeline-hint {
+  margin: 0 0 0.75rem;
+  font-size: 0.82rem;
+}
+
 .player-wrap {
   margin-top: 1rem;
 }
@@ -109,4 +229,132 @@ video {
   flex-wrap: wrap;
   gap: 0.5rem;
   margin-top: 0.75rem;
+}
+
+.track-panel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin: 0.75rem 0;
+}
+
+.track-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: #9aa0a6;
+}
+
+.track-field select {
+  min-width: 220px;
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid #3c4454;
+  background: #171a21;
+  color: inherit;
+}
+
+.track-hint {
+  margin: 0.25rem 0 0.75rem;
+}
+
+.file-list {
+  margin: 0.5rem 0 0;
+  padding-left: 1.25rem;
+  color: #9aa0a6;
+  font-size: 0.85rem;
+}
+
+.status-panel {
+  margin: 1rem 0;
+  padding: 1rem 1.1rem;
+  border-radius: 10px;
+  background: #171a21;
+  border: 1px solid #2a2f3a;
+}
+
+.status-phase {
+  font-weight: 600;
+  margin: 0 0 0.35rem;
+}
+
+.spinner {
+  width: 28px;
+  height: 28px;
+  margin-top: 0.75rem;
+  border: 3px solid #374151;
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.storage-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 2rem;
+  margin: 1rem 0;
+  padding: 0.85rem 1rem;
+  border-radius: 10px;
+  background: #171a21;
+  border: 1px solid #2a2f3a;
+}
+
+.storage-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.storage-label {
+  font-size: 0.8rem;
+  color: #9aa0a6;
+}
+
+.expand-btn {
+  min-width: 2rem;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.75rem;
+}
+
+.torrent-files {
+  padding: 0.35rem 0 0.75rem 2rem;
+}
+
+.file-hint {
+  margin: 0 0 0.5rem;
+  max-width: 52rem;
+}
+
+.files-table {
+  margin-top: 0;
+  font-size: 0.82rem;
+}
+
+.files-table th,
+.files-table td {
+  padding: 0.35rem 0.5rem;
+}
+
+.files-row td {
+  background: #12151a;
+  border-bottom: 1px solid #252932;
+}
+
+.library-page {
+  overflow-anchor: auto;
+}
+
+.library-table .torrent-row td {
+  border-bottom: none;
+}
+
+.library-table .torrent-row + .files-row td {
+  border-bottom: 1px solid #252932;
 }

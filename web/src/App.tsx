@@ -1,7 +1,9 @@
 import { NavLink, Route, Routes } from "react-router-dom";
-import SearchPage from "./pages/Search";
-import LibraryPage from "./pages/Library";
+import ServiceStatusBar from "./components/ServiceStatusBar";
+import MainTabs from "./layout/MainTabs";
 import PlayerPage from "./pages/Player";
+import WatchPreparePage from "./pages/WatchPrepare";
+import WatchSelectPage from "./pages/WatchSelect";
 
 export default function App() {
   return (
@@ -14,10 +16,13 @@ export default function App() {
           Библиотека
         </NavLink>
       </nav>
+      <ServiceStatusBar />
       <Routes>
-        <Route path="/" element={<SearchPage />} />
-        <Route path="/library" element={<LibraryPage />} />
-        <Route path="/player" element={<PlayerPage />} />
+        <Route path="/" element={<MainTabs />} />
+        <Route path="/library" element={<MainTabs />} />
+        <Route path="/watch/prepare/:provider/:externalId" element={<WatchPreparePage />} />
+        <Route path="/watch/:infoHash" element={<WatchSelectPage />} />
+        <Route path="/player/:infoHash/:fileIndex" element={<PlayerPage />} />
       </Routes>
     </div>
   );

@@ -33,8 +33,8 @@ class SearchService:
         if await self.torapi.healthy():
             try:
                 return await self.torapi.release_detail(provider, external_id)
-            except httpx.HTTPError as e:
+            except (httpx.HTTPError, ValueError) as e:
                 logger.warning("TorAPI detail failed: %s", e)
-        if provider == Provider.rutor:
+        if provider in (Provider.rutor, Provider.rutor_direct):
             return await self.rutor.release_detail(external_id)
         raise httpx.HTTPError(f"Cannot resolve release for {provider}/{external_id}")

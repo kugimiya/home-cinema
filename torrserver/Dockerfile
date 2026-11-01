@@ -10,4 +10,4 @@ RUN TS_ARCH=linux-amd64; \
 
 EXPOSE 8090
 VOLUME ["/config", "/torrents"]
-ENTRYPOINT ["/usr/local/bin/torrserver", "-p", "8090", "-d", "/config", "-k"]
+ENTRYPOINT ["/usr/local/bin/torrserver", "-p", "8090", "-d", "/config", "-k", "--torrentsdir", "/torrents"]

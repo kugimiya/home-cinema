@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Optional
 
+from app.upload_stats import accumulate_upload
+
 
 @dataclass
 class TorrentMeta:
@@ -48,6 +50,47 @@ class MetaStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS torrent_upload (
+                    info_hash TEXT PRIMARY KEY,
+                    lifetime_bytes INTEGER NOT NULL DEFAULT 0,
+                    last_reported_bytes INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+
+    def sync_upload_lifetime(self, info_hash: str, reported_bytes: int) -> int:
+        h = info_hash.lower()
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT lifetime_bytes, last_reported_bytes FROM torrent_upload WHERE info_hash = ?",
+                (h,),
+            ).fetchone()
+            if row:
+                lifetime, last = accumulate_upload(
+                    int(row["lifetime_bytes"]),
+                    int(row["last_reported_bytes"]),
+                    reported_bytes,
+                )
+                conn.execute(
+                    """
+                    UPDATE torrent_upload
+                    SET lifetime_bytes = ?, last_reported_bytes = ?
+                    WHERE info_hash = ?
+                    """,
+                    (lifetime, last, h),
+                )
+                return lifetime
+            lifetime, last = accumulate_upload(0, 0, reported_bytes)
+            conn.execute(
+                """
+                INSERT INTO torrent_upload (info_hash, lifetime_bytes, last_reported_bytes)
+                VALUES (?, ?, ?)
+                """,
+                (h, lifetime, last),
+            )
+            return lifetime
 
     def upsert(self, meta: TorrentMeta) -> None:
         with self._conn() as conn:
@@ -94,5 +137,7 @@ class MetaStore:
         )
 
     def delete(self, info_hash: str) -> None:
+        h = info_hash.lower()
         with self._conn() as conn:
-            conn.execute("DELETE FROM torrent_meta WHERE info_hash = ?", (info_hash.lower(),))
+            conn.execute("DELETE FROM torrent_meta WHERE info_hash = ?", (h,))
+            conn.execute("DELETE FROM torrent_upload WHERE info_hash = ?", (h,))

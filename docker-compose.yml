@@ -24,6 +24,8 @@ services:
       context: ./torrserver
     container_name: home-cinema-torrserver
     restart: unless-stopped
+    init: true
+    mem_limit: 3g
     ports:
       - "8090:8090"
     volumes:
@@ -32,9 +34,9 @@ services:
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/"]
       interval: 15s
-      timeout: 5s
+      timeout: 10s
       retries: 5
-      start_period: 20s
+      start_period: 30s
 
   orchestrator:
     build:
@@ -52,13 +54,37 @@ services:
     environment:
       TORAPI_URL: ${TORAPI_URL:-http://torapi:8443}
       TORRSERVER_URL: ${TORRSERVER_URL:-http://torrserver:8090}
-      TORRSERVER_PUBLIC_URL: ${TORRSERVER_PUBLIC_URL:-http://localhost:8090}
+      TORRSERVER_PUBLIC_URL: ${TORRSERVER_PUBLIC_URL:-http://localhost:3000}
       TORRENTS_SAVE_PATH: ${TORRENTS_SAVE_PATH:-/torrents}
       TORRSERVER_DATA_PATH: ${TORRSERVER_DATA_PATH:-/torrserver-data}
+      TORRSERVER_LIST_TIMEOUT: ${TORRSERVER_LIST_TIMEOUT:-45}
+      TORRSERVER_CACHE_SIZE_MB: ${TORRSERVER_CACHE_SIZE_MB:-128}
+      TORRSERVER_PRELOAD_CACHE: ${TORRSERVER_PRELOAD_CACHE:-40}
+      TORRSERVER_CONNECTIONS_LIMIT: ${TORRSERVER_CONNECTIONS_LIMIT:-40}
+      TORRSERVER_READER_READ_AHEAD: ${TORRSERVER_READER_READ_AHEAD:-95}
+      TORRSERVER_PRIORITY_CONCURRENCY: ${TORRSERVER_PRIORITY_CONCURRENCY:-4}
       DATABASE_PATH: /data/orchestrator.sqlite3
+      ORCHESTRATOR_PUBLIC_URL: ${ORCHESTRATOR_PUBLIC_URL:-http://localhost:3000}
+      TRANSCODE_ENABLED: ${TRANSCODE_ENABLED:-true}
+      TRANSCODE_WORK_DIR: ${TRANSCODE_WORK_DIR:-/tmp/transcode}
+      TRANSCODE_MAX_SESSIONS: ${TRANSCODE_MAX_SESSIONS:-2}
+      TRANSCODE_SESSION_TTL_SEC: ${TRANSCODE_SESSION_TTL_SEC:-300}
+      TRANSCODE_ALLOW_HEVC_DIRECT: ${TRANSCODE_ALLOW_HEVC_DIRECT:-false}
+      PROBE_WARM_BYTES: ${PROBE_WARM_BYTES:-4194304}
+      PROBE_WARM_FILES: ${PROBE_WARM_FILES:-2}
+      PROBE_WARM_MANUAL_FILES: ${PROBE_WARM_MANUAL_FILES:--1}
+      PROBE_WARM_CONCURRENCY: ${PROBE_WARM_CONCURRENCY:-1}
+      SERVICE_RESTART_ENABLED: ${SERVICE_RESTART_ENABLED:-false}
+      DISCOVERY_MDNS_ENABLED: ${DISCOVERY_MDNS_ENABLED:-false}
+      DOCKER_CONTAINER_TORRSERVER: ${DOCKER_CONTAINER_TORRSERVER:-home-cinema-torrserver}
+      DOCKER_CONTAINER_TORAPI: ${DOCKER_CONTAINER_TORAPI:-home-cinema-torapi}
+      DOCKER_CONTAINER_ORCHESTRATOR: ${DOCKER_CONTAINER_ORCHESTRATOR:-home-cinema-orchestrator}
     volumes:
       - ./data/orchestrator:/data
       - ./data/torrents:/torrents
+      - transcode-cache:${TRANSCODE_WORK_DIR:-/tmp/transcode}
+      # Uncomment for UI «Перезагрузить сервис» (read-only socket):
+      # - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       torrserver:
         condition: service_healthy
@@ -74,3 +100,6 @@ services:
       - "${WEB_PORT:-3000}:80"
     depends_on:
       - orchestrator
+
+volumes:
+  transcode-cache:
