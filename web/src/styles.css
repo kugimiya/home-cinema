@@ -113,7 +113,8 @@ nav a.active {
 }
 
 input[type="search"],
-input[type="text"] {
+input[type="text"],
+textarea {
   width: 100%;
   max-width: 420px;
   padding: 0.55rem 0.75rem;
@@ -121,6 +122,53 @@ input[type="text"] {
   border: 1px solid #3c4454;
   background: #171a21;
   color: inherit;
+  font: inherit;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 3.5rem;
+}
+
+.magnet-add-panel {
+  margin: 1.5rem 0 1.25rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid #2a2f3a;
+  border-radius: 10px;
+  background: #141820;
+}
+
+.magnet-add-panel--compact {
+  margin-top: 0.75rem;
+}
+
+.magnet-add-heading {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.magnet-add-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  max-width: 640px;
+}
+
+.magnet-add-field textarea,
+.magnet-add-field input[type="text"] {
+  max-width: none;
+  display: block;
+  margin-top: 0.25rem;
+}
+
+.magnet-add-label {
+  font-size: 0.85rem;
+  color: #9aa3b5;
+}
+
+.magnet-add-actions {
+  margin-top: 0.15rem;
 }
 
 button {

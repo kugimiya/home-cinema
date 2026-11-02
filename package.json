@@ -1,0 +1,14 @@
+{
+  "name": "home-cinema",
+  "private": true,
+  "workspaces": [
+    "orchestrator",
+    "torrent-engine",
+    "transcoder",
+    "web"
+  ],
+  "scripts": {
+    "build": "npm run build -w orchestrator -w torrent-engine -w transcoder",
+    "test": "npm run test -w orchestrator -w torrent-engine -w transcoder"
+  }
+}

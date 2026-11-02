@@ -253,6 +253,15 @@ export function preparePlay(provider: Provider, externalId: string) {
   });
 }
 
+export function preparePlayMagnet(magnet: string, title?: string) {
+  const body: { magnet: string; title?: string } = { magnet };
+  if (title?.trim()) body.title = title.trim();
+  return request<PrepareResponse>("/api/play/prepare", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 export function fetchPrepare(hash: string) {
   return request<PrepareResponse>(`/api/torrents/${encodeURIComponent(hash)}/prepare`);
 }

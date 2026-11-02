@@ -24,10 +24,11 @@ UI: [http://localhost:3000](http://localhost:3000)
 
 - Файлы на `./data/torrents`, после просмотра **`POST /api/torrents/{hash}/playback-ended`** переводит раздачу в **completing** (докачка + раздача).
 - Direct `/stream` через nginx :3000 (`TORRENT_ENGINE_PUBLIC_URL`).
+- HTTP-сервис на **Node.js (Fastify)**; libtorrent через **N-API addon** (`native/`, `lt_session.node`).
 
 ## Transcoder
 
-- Отдельный контейнер; вход с общего тома `/torrents` или HTTP stream с engine.
+- Отдельный контейнер (Node.js / Fastify); вход с общего тома `/torrents` или HTTP stream с engine.
 - Orchestrator отдаёт HLS через `/api/transcode/...` (общий volume `transcode-cache`).
 
 ## Плеер
@@ -36,20 +37,19 @@ UI: [http://localhost:3000](http://localhost:3000)
 - **240–1440p**: HLS через transcoder.
 - Озвучка, seek (новая transcode-сессия), субтитры (web).
 
-## Тесты (TDD)
+## Тесты
 
 ```bash
-pip install pytest pytest-asyncio httpx
-python -m pytest orchestrator/tests transcoder/tests -q
-# torrent-engine (нужен libtorrent):
-pip install -e ./torrent-engine[dev] && python -m pytest torrent-engine/tests -q
+cd orchestrator && npm install && npm test
+cd ../torrent-engine && npm install && npm test
+cd ../transcoder && npm install && npm test
 ```
 
 Docker: `docker compose -f docker-compose.yml -f compose.test.yml run --rm test-runner`
 
 ## Структура
 
-- `torrent-engine/` — libtorrent + REST + Range stream
-- `transcoder/` — ffmpeg HLS sessions
-- `orchestrator/` — API, probe, библиотека
+- `torrent-engine/` — libtorrent + REST + Range stream (Fastify + TS)
+- `transcoder/` — ffmpeg HLS sessions (Fastify + TS)
+- `orchestrator/` — API, probe, библиотека (Fastify + TS)
 - `web/`, `android/`

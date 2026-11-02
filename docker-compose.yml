@@ -35,10 +35,15 @@ services:
     environment:
       TORRENT_ENGINE_SAVE_PATH: /torrents
       TORRENT_ENGINE_PORT: 8090
+      TORRENT_ENGINE_HOST: ${TORRENT_ENGINE_HOST:-0.0.0.0}
+      TORRENT_ENGINE_LISTEN_INTERFACES: ${TORRENT_ENGINE_LISTEN_INTERFACES:-eth0:6881}
+      TORRENT_ENGINE_ENABLE_LSD: ${TORRENT_ENGINE_ENABLE_LSD:-false}
+      TORRENT_ENGINE_ENABLE_UPNP: ${TORRENT_ENGINE_ENABLE_UPNP:-false}
+      TORRENT_ENGINE_ENABLE_NATPMP: ${TORRENT_ENGINE_ENABLE_NATPMP:-false}
     volumes:
       - ./data/torrents:/torrents
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health')\""]
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8090/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 15s
       timeout: 10s
       retries: 5
@@ -61,7 +66,7 @@ services:
       - ./data/torrents:/torrents
       - transcode-cache:/transcode
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/health')\""]
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8091/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -75,7 +80,7 @@ services:
     ports:
       - "${ORCHESTRATOR_PORT:-8080}:8080"
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')\""]
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 15s
       timeout: 5s
       retries: 5

@@ -1,0 +1,31 @@
+{
+  "name": "home-cinema-torrent-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "gypfile": true,
+  "scripts": {
+    "build:native": "node-gyp rebuild",
+    "build": "node-gyp rebuild && tsc",
+    "install": "node-gyp rebuild",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "fastify": "^4.29.1",
+    "node-addon-api": "^8.3.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "node-gyp": "^11.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

@@ -13,6 +13,7 @@ import {
   type TorrentEntry,
   type TorrentFileStat,
 } from "../api/client";
+import MagnetAddForm from "../components/MagnetAddForm";
 import { useUiStore } from "../state/uiStore";
 
 const LIBRARY_SCROLL_KEY = "home-cinema.library.scrollY";
@@ -305,6 +306,8 @@ export default function LibraryPage() {
           </div>
         </div>
       )}
+
+      <MagnetAddForm compact />
 
       <button
         type="button"

@@ -1,6 +1,7 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { search, providerLabel, type Release } from "../api/client";
+import MagnetAddForm from "../components/MagnetAddForm";
 import { loadSearchSession, saveSearchSession } from "../state/searchSession";
 
 export default function SearchPage() {
@@ -79,6 +80,7 @@ export default function SearchPage() {
           {loading ? "Ищем…" : "Найти"}
         </button>
       </form>
+      <MagnetAddForm />
       {source && (
         <p className="muted">
           Источник: {source === "torapi" ? "TorAPI" : "RuTor (fallback)"} · результатов:{" "}
