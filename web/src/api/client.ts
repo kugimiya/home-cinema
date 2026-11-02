@@ -20,6 +20,19 @@ export interface Release {
   peers?: string | null;
   magnet?: string | null;
   url?: string | null;
+  torrent_url?: string | null;
+}
+
+export const PROVIDER_LABELS: Record<Provider, string> = {
+  rutracker: "RuTracker",
+  kinozal: "Kinozal",
+  rutor: "RuTor",
+  nonameclub: "NoNameClub",
+  rutor_direct: "RuTor",
+};
+
+export function providerLabel(provider: Provider): string {
+  return PROVIDER_LABELS[provider] ?? provider;
 }
 
 export interface SearchResponse {
@@ -267,10 +280,14 @@ export function fetchPlaySelectStatus(hash: string) {
   );
 }
 
+export const VIDEO_QUALITY_PRESETS = [240, 320, 480, 720, 1080, 1440] as const;
+export type VideoQualityPreset = (typeof VIDEO_QUALITY_PRESETS)[number] | "auto";
+
 export function selectPlayFile(
   hash: string,
   fileIndex: number,
   subtitleFileIds: number[] = [],
+  videoHeight?: number | null,
 ) {
   return request<PlayResponse>("/api/play/select", {
     method: "POST",
@@ -278,6 +295,7 @@ export function selectPlayFile(
       hash,
       file_index: fileIndex,
       subtitle_file_ids: subtitleFileIds,
+      video_height: videoHeight ?? undefined,
     }),
   });
 }
@@ -288,6 +306,7 @@ export function createTranscodeSession(
   audioIndex: number,
   startSec: number,
   replaceSessionId?: string | null,
+  videoHeight?: number | null,
 ) {
   return request<TranscodeSessionResponse>("/api/transcode/session", {
     method: "POST",
@@ -296,9 +315,20 @@ export function createTranscodeSession(
       file_index: fileIndex,
       audio_index: audioIndex,
       start_sec: startSec,
+      video_height: videoHeight ?? undefined,
       replace_session_id: replaceSessionId ?? undefined,
     }),
   });
+}
+
+export function notifyPlaybackEnded(hash: string, fileIds: number[]) {
+  return request<{ status: string }>(
+    `/api/torrents/${encodeURIComponent(hash)}/playback-ended`,
+    {
+      method: "POST",
+      body: JSON.stringify({ file_ids: fileIds }),
+    },
+  );
 }
 
 export function deleteTranscodeSession(sessionId: string) {
@@ -357,6 +387,96 @@ export interface SystemStatusResponse {
   polled_at: string;
 }
 
+export interface EngineSessionStatus {
+  save_path: string;
+  connections_limit: number;
+  listen: string;
+  enable_dht: boolean;
+  enable_lsd: boolean;
+  enable_upnp: boolean;
+  enable_natpmp: boolean;
+  torrent_count: number;
+  download_rate: number;
+  upload_rate: number;
+  active_downloads: number;
+  waiting_metadata: number;
+  seeding_count: number;
+  alert_buffer_size: number;
+  collected_at: number;
+  user_agent?: string | null;
+  peer_fingerprint?: string | null;
+  handshake_client_version?: string | null;
+  dht_bootstrap_nodes?: string | null;
+}
+
+export interface EngineTorrentFileLive {
+  id: number;
+  path: string;
+  length: number;
+  downloaded_bytes: number;
+  completed: boolean;
+  priority: number;
+}
+
+export interface EngineTorrentLive {
+  hash: string;
+  title: string;
+  stat_string?: string | null;
+  mode?: string | null;
+  torrent_size?: number | null;
+  loaded_size?: number | null;
+  download_speed?: number | null;
+  upload_speed?: number | null;
+  total_peers?: number | null;
+  connected_seeders?: number | null;
+  bytes_written_data?: number | null;
+  all_time_download?: number | null;
+  has_metadata?: boolean | null;
+  is_seeding?: boolean | null;
+  is_finished?: boolean | null;
+  is_paused?: boolean | null;
+  progress?: number | null;
+  num_connections?: number | null;
+  error?: string | null;
+  save_path?: string | null;
+  torrent_name?: string | null;
+  scope_file_ids: number[];
+  last_heartbeat_age_sec?: number | null;
+  sequential_download?: boolean | null;
+  pieces_total?: number | null;
+  pieces_have?: number | null;
+  piece_length?: number | null;
+  file_stats: EngineTorrentFileLive[];
+}
+
+export interface EngineAlertEntry {
+  type: string;
+  message: string;
+  at: number;
+  category?: number | null;
+  info_hash?: string | null;
+  error?: string | null;
+}
+
+export interface EngineOrchestratorSnapshot {
+  activity_label?: string | null;
+  activity_detail?: string | null;
+  transcode_sessions: number;
+  transcode_max: number;
+  warm_probe_active: boolean;
+  warm_probe_detail?: string | null;
+  warm_probe_queue: number;
+}
+
+export interface EngineDiagnosticsResponse {
+  session: EngineSessionStatus | null;
+  torrents: EngineTorrentLive[];
+  alerts: EngineAlertEntry[];
+  orchestrator: EngineOrchestratorSnapshot;
+  engine_error?: string | null;
+  polled_at: string;
+}
+
 export function listTorrents(detail?: string[]) {
   const params = new URLSearchParams();
   if (detail?.length) {
@@ -370,6 +490,13 @@ export function listTorrents(detail?: string[]) {
 
 export function fetchSystemStatus() {
   return request<SystemStatusResponse>("/api/system/status");
+}
+
+export function fetchEngineDiagnostics(alertLimit = 120) {
+  return request<EngineDiagnosticsResponse>(
+    `/api/engine/diagnostics?alert_limit=${alertLimit}`,
+    { signal: AbortSignal.timeout(20_000) },
+  );
 }
 
 export function restartService(serviceId: string) {
@@ -398,7 +525,7 @@ export function formatBytes(n?: number | null) {
   return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
-/** TorrServer reports speeds in bytes per second. */
+/** torrent-engine reports speeds in bytes per second. */
 export function formatSpeed(bytesPerSec?: number | null) {
   if (bytesPerSec == null || bytesPerSec <= 0) return null;
   return `${formatBytes(bytesPerSec)}/s`;
@@ -452,12 +579,21 @@ export function subtitleFiles(files: TorrentMediaFile[]) {
   return files.filter((f) => f.kind === "subtitle");
 }
 
+/** Resolve API media paths against the current page origin (nginx → orchestrator). */
+export function absoluteMediaUrl(pathOrUrl: string | null | undefined): string {
+  if (!pathOrUrl) return "";
+  if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
+  const path = pathOrUrl.startsWith("/") ? pathOrUrl : `/${pathOrUrl}`;
+  if (typeof window === "undefined") return path;
+  return `${window.location.origin}${path}`;
+}
+
 export function toPlayerState(session: PlayResponse): PlayerState {
   const streamUrl = session.stream_url;
   const fileIndex = session.file_index;
   const fileName = session.file_name;
   const playbackMode = session.playback_mode ?? "direct";
-  const playbackUrl = session.playback_url;
+  const playbackUrl = absoluteMediaUrl(session.playback_url);
   if (fileIndex == null || !fileName) {
     throw new Error("Нет данных о выбранном файле");
   }

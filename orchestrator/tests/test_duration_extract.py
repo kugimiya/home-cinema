@@ -1,6 +1,6 @@
 import unittest
 
-from app.playback_probe import extract_duration_sec
+from app.playback_probe import extract_duration_sec, resolve_probe_duration
 
 
 class TestExtractDurationSec(unittest.TestCase):
@@ -26,6 +26,13 @@ class TestExtractDurationSec(unittest.TestCase):
             ],
         }
         self.assertEqual(extract_duration_sec(data), 5400.25)
+
+    def test_resolve_probe_duration_partial_head(self) -> None:
+        file_length = 8693914042
+        resolved = resolve_probe_duration(28.0, file_length)
+        self.assertIsNotNone(resolved)
+        assert resolved is not None
+        self.assertGreater(resolved, 3600.0)
 
 
 if __name__ == "__main__":

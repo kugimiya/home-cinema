@@ -78,6 +78,7 @@ def _parse_search_html(text: str, base: str) -> list[Release]:
                 voice=parse_voice(title),
                 magnet=html.unescape(mag.get("href", "")),
                 url=f"{base}{href}",
+                torrent_url=f"https://d.rutor.info/download/{m_id.group(1)}",
                 seeds=seeds,
                 peers=peers,
             )
@@ -111,6 +112,7 @@ def _parse_detail_html(text: str, external_id: str, base: str) -> ReleaseDetail:
         magnet=magnet,
         hash=hash_val,
         url=f"{base}/torrent/{external_id}",
+        torrent_url=f"https://d.rutor.info/download/{external_id}",
     )
 
 

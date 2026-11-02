@@ -81,6 +81,8 @@ def build_ffmpeg_command(
             "0",
             "-hls_segment_type",
             "fmp4",
+            "-hls_fmp4_init_filename",
+            "init.mp4",
             "-hls_flags",
             "independent_segments",
             "-hls_segment_filename",

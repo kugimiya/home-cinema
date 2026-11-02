@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.clients.torrserver import (
+from app.torrent_files import (
     PRIORITY_BACKGROUND,
     PRIORITY_OFF,
     PRIORITY_STREAM,

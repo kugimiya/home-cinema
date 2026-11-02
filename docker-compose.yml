@@ -19,24 +19,53 @@ services:
       retries: 5
       start_period: 60s
 
-  torrserver:
+  torrent-engine:
     build:
-      context: ./torrserver
-    container_name: home-cinema-torrserver
+      context: ./torrent-engine
+    container_name: home-cinema-torrent-engine
     restart: unless-stopped
     init: true
     mem_limit: 3g
     ports:
       - "8090:8090"
+      - "6881:6881/tcp"
+      - "6881:6881/udp"
+    env_file:
+      - .env
+    environment:
+      TORRENT_ENGINE_SAVE_PATH: /torrents
+      TORRENT_ENGINE_PORT: 8090
     volumes:
-      - ./data/torrserver-config:/config
       - ./data/torrents:/torrents
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health')\""]
       interval: 15s
       timeout: 10s
       retries: 5
       start_period: 30s
+
+  transcoder:
+    build:
+      context: ./transcoder
+    container_name: home-cinema-transcoder
+    restart: unless-stopped
+    mem_limit: ${TRANSCODER_MEM_LIMIT:-4g}
+    ports:
+      - "${TRANSCODER_PORT:-8091}:8091"
+    environment:
+      TR_TORRENTS_PATH: /torrents
+      TR_WORK_DIR: /transcode
+      TR_MAX_SESSIONS: ${TRANSCODE_MAX_SESSIONS:-4}
+      TR_TORRENT_ENGINE_URL: http://torrent-engine:8090
+    volumes:
+      - ./data/torrents:/torrents
+      - transcode-cache:/transcode
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   orchestrator:
     build:
@@ -53,21 +82,20 @@ services:
       start_period: 30s
     environment:
       TORAPI_URL: ${TORAPI_URL:-http://torapi:8443}
-      TORRSERVER_URL: ${TORRSERVER_URL:-http://torrserver:8090}
-      TORRSERVER_PUBLIC_URL: ${TORRSERVER_PUBLIC_URL:-http://localhost:3000}
-      TORRENTS_SAVE_PATH: ${TORRENTS_SAVE_PATH:-/torrents}
-      TORRSERVER_DATA_PATH: ${TORRSERVER_DATA_PATH:-/torrserver-data}
-      TORRSERVER_LIST_TIMEOUT: ${TORRSERVER_LIST_TIMEOUT:-45}
-      TORRSERVER_CACHE_SIZE_MB: ${TORRSERVER_CACHE_SIZE_MB:-128}
-      TORRSERVER_PRELOAD_CACHE: ${TORRSERVER_PRELOAD_CACHE:-40}
-      TORRSERVER_CONNECTIONS_LIMIT: ${TORRSERVER_CONNECTIONS_LIMIT:-40}
-      TORRSERVER_READER_READ_AHEAD: ${TORRSERVER_READER_READ_AHEAD:-95}
-      TORRSERVER_PRIORITY_CONCURRENCY: ${TORRSERVER_PRIORITY_CONCURRENCY:-4}
+      TORRENT_ENGINE_URL: ${TORRENT_ENGINE_URL:-http://torrent-engine:8090}
+      TORRENT_ENGINE_PUBLIC_URL: ${TORRENT_ENGINE_PUBLIC_URL:-http://localhost:3000}
+      TRANSCODER_URL: ${TRANSCODER_URL:-http://transcoder:8091}
+      TRANSCODER_ENABLED: ${TRANSCODER_ENABLED:-true}
+      TORRENT_ENGINE_SAVE_PATH: ${TORRENT_ENGINE_SAVE_PATH:-/torrents}
+      TORRENT_ENGINE_LIST_TIMEOUT: ${TORRENT_ENGINE_LIST_TIMEOUT:-45}
+      TORRENT_ENGINE_CONNECTIONS_LIMIT: ${TORRENT_ENGINE_CONNECTIONS_LIMIT:-500}
+      TORRENT_ENGINE_PRIORITY_CONCURRENCY: ${TORRENT_ENGINE_PRIORITY_CONCURRENCY:-4}
+      COMPLETE_SCOPE: ${COMPLETE_SCOPE:-active_only}
       DATABASE_PATH: /data/orchestrator.sqlite3
       ORCHESTRATOR_PUBLIC_URL: ${ORCHESTRATOR_PUBLIC_URL:-http://localhost:3000}
       TRANSCODE_ENABLED: ${TRANSCODE_ENABLED:-true}
-      TRANSCODE_WORK_DIR: ${TRANSCODE_WORK_DIR:-/tmp/transcode}
-      TRANSCODE_MAX_SESSIONS: ${TRANSCODE_MAX_SESSIONS:-2}
+      TRANSCODE_WORK_DIR: ${TRANSCODE_WORK_DIR:-/transcode}
+      TRANSCODE_MAX_SESSIONS: ${TRANSCODE_MAX_SESSIONS:-4}
       TRANSCODE_SESSION_TTL_SEC: ${TRANSCODE_SESSION_TTL_SEC:-300}
       TRANSCODE_ALLOW_HEVC_DIRECT: ${TRANSCODE_ALLOW_HEVC_DIRECT:-false}
       PROBE_WARM_BYTES: ${PROBE_WARM_BYTES:-4194304}
@@ -76,17 +104,18 @@ services:
       PROBE_WARM_CONCURRENCY: ${PROBE_WARM_CONCURRENCY:-1}
       SERVICE_RESTART_ENABLED: ${SERVICE_RESTART_ENABLED:-false}
       DISCOVERY_MDNS_ENABLED: ${DISCOVERY_MDNS_ENABLED:-false}
-      DOCKER_CONTAINER_TORRSERVER: ${DOCKER_CONTAINER_TORRSERVER:-home-cinema-torrserver}
+      DOCKER_CONTAINER_TORRENT_ENGINE: ${DOCKER_CONTAINER_TORRENT_ENGINE:-home-cinema-torrent-engine}
+      DOCKER_CONTAINER_TRANSCODER: ${DOCKER_CONTAINER_TRANSCODER:-home-cinema-transcoder}
       DOCKER_CONTAINER_TORAPI: ${DOCKER_CONTAINER_TORAPI:-home-cinema-torapi}
       DOCKER_CONTAINER_ORCHESTRATOR: ${DOCKER_CONTAINER_ORCHESTRATOR:-home-cinema-orchestrator}
     volumes:
       - ./data/orchestrator:/data
       - ./data/torrents:/torrents
-      - transcode-cache:${TRANSCODE_WORK_DIR:-/tmp/transcode}
-      # Uncomment for UI «Перезагрузить сервис» (read-only socket):
-      # - /var/run/docker.sock:/var/run/docker.sock:ro
+      - transcode-cache:${TRANSCODE_WORK_DIR:-/transcode}
     depends_on:
-      torrserver:
+      torrent-engine:
+        condition: service_healthy
+      transcoder:
         condition: service_healthy
       torapi:
         condition: service_started

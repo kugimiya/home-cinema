@@ -5,7 +5,7 @@ from pathlib import Path
 
 import httpx
 
-from app.clients.torrserver import TorrServerClient
+from app.clients.torrent_engine import TorrentEngineClient
 
 logger = logging.getLogger(__name__)
 
@@ -16,18 +16,18 @@ def head_cache_path(base_dir: Path, info_hash: str, file_id: int) -> Path:
 
 
 async def download_head_range(
-    torr: TorrServerClient,
+    torrent_engine: TorrentEngineClient,
     info_hash: str,
     file_path: str,
     file_index: int,
     target_bytes: int,
     dest: Path,
 ) -> int:
-    """Fetch bytes [0, target) from TorrServer stream into dest. Returns bytes written."""
+    """Fetch bytes [0, target) from torrent-engine stream into dest. Returns bytes written."""
     if target_bytes <= 0:
         return 0
     dest.parent.mkdir(parents=True, exist_ok=True)
-    url = torr.build_internal_stream_url(info_hash, file_path, file_index)
+    url = torrent_engine.build_internal_stream_url(info_hash, file_path, file_index)
     end = max(0, target_bytes - 1)
     headers = {"Range": f"bytes=0-{end}"}
     timeout = httpx.Timeout(120.0, connect=15.0)
@@ -51,7 +51,7 @@ async def download_head_range(
 
 
 async def ensure_head_file(
-    torr: TorrServerClient,
+    torrent_engine: TorrentEngineClient,
     base_dir: Path,
     info_hash: str,
     file_path: str,
@@ -68,7 +68,7 @@ async def ensure_head_file(
             return path, size
     try:
         written = await download_head_range(
-            torr, info_hash, file_path, file_index, target_bytes, path
+            torrent_engine, info_hash, file_path, file_index, target_bytes, path
         )
     except Exception as e:
         logger.warning("head download failed %s/%s: %s", info_hash[:8], file_index, e)

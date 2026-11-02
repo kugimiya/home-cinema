@@ -1,6 +1,6 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { search, type Release } from "../api/client";
+import { search, providerLabel, type Release } from "../api/client";
 import { loadSearchSession, saveSearchSession } from "../state/searchSession";
 
 export default function SearchPage() {
@@ -90,6 +90,7 @@ export default function SearchPage() {
         <table>
           <thead>
             <tr>
+              <th>Трекер</th>
               <th>Название</th>
               <th>Качество</th>
               <th>Озвучка</th>
@@ -101,6 +102,7 @@ export default function SearchPage() {
           <tbody>
             {releases.map((r) => (
               <tr key={`${r.provider}-${r.external_id}`}>
+                <td className="search-tracker-col">{providerLabel(r.provider)}</td>
                 <td>{r.title}</td>
                 <td>{r.quality || "—"}</td>
                 <td>{r.voice || "—"}</td>

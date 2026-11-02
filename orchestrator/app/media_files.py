@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-from app.clients.torrserver import file_index_and_path
+from app.torrent_files import file_index_and_path
 from app.metadata import parse_quality, parse_voice
 from app.models import MediaKind, TorrentMediaFile
 

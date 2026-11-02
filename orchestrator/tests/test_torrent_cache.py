@@ -1,12 +1,11 @@
 import asyncio
-import time
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 
-from app.torr_cache import TorrStateCache
+from app.torrent_cache import TorrentStateCache
 
 
-class TorrCacheTests(unittest.IsolatedAsyncioTestCase):
+class TorrentCacheTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.client = MagicMock()
         self.client.list_torrents = AsyncMock(
@@ -20,12 +19,14 @@ class TorrCacheTests(unittest.IsolatedAsyncioTestCase):
         )
         self.client.get_torrent = AsyncMock(return_value={})
         self.client.get_cache = AsyncMock(return_value={"pieces": []})
-        self.cache = TorrStateCache(self.client)
+        self.cache = TorrentStateCache(self.client)
 
     async def test_list_coalesced(self) -> None:
+        expected = self.client.list_torrents.return_value
+
         async def slow_list() -> list:
             await asyncio.sleep(0.05)
-            return await self.client.list_torrents.return_value
+            return expected
 
         self.client.list_torrents = AsyncMock(side_effect=slow_list)
         a, b = await asyncio.gather(

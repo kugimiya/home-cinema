@@ -5,6 +5,7 @@ import {
   fileBasename,
   fileStatusLabel,
   formatBytes,
+  formatSpeed,
   listTorrents,
   pauseTorrentDownload,
   startWarmProbe,
@@ -15,6 +16,115 @@ import {
 import { useUiStore } from "../state/uiStore";
 
 const LIBRARY_SCROLL_KEY = "home-cinema.library.scrollY";
+
+function formatPeerSummary(t: TorrentEntry): string {
+  const peers = t.total_peers ?? 0;
+  const seeds = t.connected_seeders ?? 0;
+  return `${peers} пир. / ${seeds} сид.`;
+}
+
+function torrentTitleTooltip(t: TorrentEntry, fileCount: number): string {
+  const parts = [t.title];
+  const meta = [t.quality, t.voice].filter(Boolean).join(" · ");
+  if (meta) parts.push(meta);
+  if (fileCount > 0) parts.push(`${fileCount} файлов`);
+  return parts.join("\n");
+}
+
+function formatSpeedCell(speed: number | null | undefined): string {
+  return speed != null && speed > 0 ? formatSpeed(speed) : "—";
+}
+
+type TorrentActionsMenuProps = {
+  t: TorrentEntry;
+  busy: boolean;
+  onWatch: () => void;
+  onWarm: () => void;
+  onPause: () => void;
+  onDelete: () => void;
+};
+
+function TorrentActionsMenu({
+  t,
+  busy,
+  onWatch,
+  onWarm,
+  onPause,
+  onDelete,
+}: TorrentActionsMenuProps) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("click", onDocClick);
+    return () => document.removeEventListener("click", onDocClick);
+  }, [open]);
+
+  function run(action: () => void) {
+    setOpen(false);
+    action();
+  }
+
+  return (
+    <div className="library-actions-menu" ref={rootRef}>
+      <button
+        type="button"
+        className="secondary"
+        disabled={busy}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+      >
+        ⋮
+      </button>
+      {open && (
+        <div className="library-actions-dropdown" role="menu">
+          <button type="button" disabled={busy} onClick={() => run(onWatch)}>
+            Смотреть
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy || !t.probe_warm_enabled}
+            title={
+              t.probe_warm_enabled
+                ? "Подгрузить начало файлов для быстрого ffprobe"
+                : "Отключено (PROBE_WARM_BYTES=0)"
+            }
+            onClick={() => run(onWarm)}
+          >
+            Предзагрузить ffprobe
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy}
+            onClick={() => run(onPause)}
+          >
+            Остановить скачку
+          </button>
+          <button
+            type="button"
+            className="danger"
+            disabled={busy}
+            onClick={() => run(onDelete)}
+          >
+            Удалить
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function mergeTorrents(
   prev: TorrentEntry[],
@@ -218,9 +328,10 @@ export default function LibraryPage() {
               <th>Статус</th>
               <th>Размер</th>
               <th>На диске</th>
-              <th title="Суммарно отдано пирам (все сессии TorrServer)">Отдано</th>
-              <th>Пиры</th>
-              <th />
+              <th title="Текущая скорость загрузки">Загрузка</th>
+              <th title="Текущая скорость отдачи">Отдача</th>
+              <th title="Подключённые пиры / сиды в swarm (libtorrent)">Пиры / сиды</th>
+              <th aria-label="Действия" />
             </tr>
           </thead>
           <tbody>
@@ -242,16 +353,13 @@ export default function LibraryPage() {
                         {files.length === 0 ? "·" : isOpen ? "▼" : "▶"}
                       </button>
                     </td>
-                    <td>
-                      {t.title}
-                      {(t.quality || t.voice) && (
-                        <div className="muted">
-                          {[t.quality, t.voice].filter(Boolean).join(" · ")}
-                        </div>
-                      )}
-                      {files.length > 0 && (
-                        <div className="muted">{files.length} файлов</div>
-                      )}
+                    <td className="library-name-col">
+                      <div
+                        className="library-title-ellipsis"
+                        title={torrentTitleTooltip(t, files.length)}
+                      >
+                        {t.title}
+                      </div>
                     </td>
                     <td>
                       {t.stat_string || "—"}
@@ -259,56 +367,25 @@ export default function LibraryPage() {
                         <div className="muted">{t.warm_summary}</div>
                       )}
                     </td>
-                    <td>{formatBytes(t.torrent_size)}</td>
-                    <td>{formatBytes(t.on_disk_bytes ?? t.preloaded_bytes)}</td>
+                    <td>{formatBytes(t.torrent_size ?? t.loaded_size)}</td>
+                    <td>{formatBytes(t.on_disk_bytes ?? t.loaded_size ?? t.preloaded_bytes)}</td>
+                    <td>{formatSpeedCell(t.download_speed)}</td>
+                    <td>{formatSpeedCell(t.upload_speed)}</td>
+                    <td>{formatPeerSummary(t)}</td>
                     <td>
-                      {(t.uploaded_bytes ?? 0) > 0
-                        ? formatBytes(t.uploaded_bytes)
-                        : "—"}
-                    </td>
-                    <td>{t.total_peers ?? "—"}</td>
-                    <td>
-                      <button
-                        type="button"
-                        disabled={busyHash === t.hash}
-                        onClick={() => onWatchTorrent(t)}
-                      >
-                        Смотреть
-                      </button>{" "}
-                      <button
-                        type="button"
-                        className="secondary"
-                        disabled={busyHash === t.hash || !t.probe_warm_enabled}
-                        title={
-                          t.probe_warm_enabled
-                            ? "Подгрузить начало файлов для быстрого ffprobe"
-                            : "Отключено (PROBE_WARM_BYTES=0)"
-                        }
-                        onClick={() => void onWarmProbe(t)}
-                      >
-                        Предзагрузить ffprobe
-                      </button>{" "}
-                      <button
-                        type="button"
-                        className="secondary"
-                        disabled={busyHash === t.hash}
-                        onClick={() => onPause(t.hash)}
-                      >
-                        Остановить скачку
-                      </button>{" "}
-                      <button
-                        type="button"
-                        className="danger"
-                        disabled={busyHash === t.hash}
-                        onClick={() => onDelete(t.hash, t.title)}
-                      >
-                        Удалить
-                      </button>
+                      <TorrentActionsMenu
+                        t={t}
+                        busy={busyHash === t.hash}
+                        onWatch={() => onWatchTorrent(t)}
+                        onWarm={() => void onWarmProbe(t)}
+                        onPause={() => void onPause(t.hash)}
+                        onDelete={() => void onDelete(t.hash, t.title)}
+                      />
                     </td>
                   </tr>
                   {isOpen && files.length > 0 && (
                     <tr key={`${t.hash}-files`} className="files-row">
-                      <td colSpan={8}>
+                      <td colSpan={9}>
                         <div className="torrent-files">
                           {(t.on_disk_bytes ?? 0) > 0 &&
                             files.every((f) => f.downloaded_bytes === 0) && (
@@ -323,7 +400,7 @@ export default function LibraryPage() {
                                 <th>Файл</th>
                                 <th>Размер</th>
                                 <th
-                                  title="Оценка: доля upload TorrServer по объёму скачанного файла"
+                                  title="Оценка: доля upload torrent-engine по объёму скачанного файла"
                                 >
                                   Отдано
                                 </th>

@@ -20,6 +20,9 @@ from app.transcode_ffmpeg import (
     wait_for_playlist,
 )
 
+if False:  # type checking hook
+    from app.clients.transcoder import TranscoderClient
+
 logger = logging.getLogger(__name__)
 
 SAFE_FILENAME = re.compile(r"^[a-zA-Z0-9._-]+$")
@@ -38,6 +41,8 @@ class TranscodeSession:
     audio_ordinal: int
     start_sec: float
     out_dir: Path
+    video_height: int | None = None
+    remote_session: bool = False
     process: Optional[asyncio.subprocess.Process] = None
     created_at: float = field(default_factory=time.time)
     last_access: float = field(default_factory=time.time)
@@ -51,16 +56,20 @@ class TranscodeSessionManager:
         max_sessions: int,
         ttl_sec: int,
         public_base_url: str,
+        *,
+        transcoder: "TranscoderClient | None" = None,
     ) -> None:
         self.work_dir = Path(work_dir)
         self.max_sessions = max(1, max_sessions)
         self.ttl_sec = max(30, ttl_sec)
         self.public_base_url = public_base_url.rstrip("/")
+        self._transcoder = transcoder
         self._sessions: dict[str, TranscodeSession] = {}
         self._lock = asyncio.Lock()
 
     def playback_url(self, session_id: str) -> str:
-        return f"{self.public_base_url}/api/transcode/{session_id}/{PLAYLIST_NAME}"
+        # Path-only URL so the browser uses the same host as the UI (localhost vs LAN IP).
+        return f"/api/transcode/{session_id}/{PLAYLIST_NAME}"
 
     async def create_session(
         self,
@@ -72,20 +81,53 @@ class TranscodeSessionManager:
         probe: ProbeResult,
         audio_ordinal: int,
         start_sec: float = 0.0,
+        video_height: int | None = None,
+        relative_path: str = "",
     ) -> TranscodeSession:
+        await self._purge_expired()
         async with self._lock:
-            self._purge_expired_unlocked()
             if len(self._sessions) >= self.max_sessions:
                 raise RuntimeError(
-                    f"Достигнут лимит перекодирования ({self.max_sessions}). "
-                    "Закройте другой просмотр или подождите."
+                    f"Достигнут лимит перекодирования ({self.max_sessions} одновременных потоков). "
+                    "Закройте плеер на другом устройстве, подождите ~минуту или увеличьте "
+                    "TRANSCODE_MAX_SESSIONS в .env и перезапустите orchestrator/transcoder."
                 )
 
             session_id = str(uuid.uuid4())
             out_dir = self.work_dir / session_id
             if out_dir.exists():
                 shutil.rmtree(out_dir, ignore_errors=True)
+            local_session = TranscodeSession(
+                session_id=session_id,
+                info_hash=info_hash.lower(),
+                file_index=file_index,
+                file_path=file_path,
+                source_url=source_url,
+                playback_mode=probe.playback_mode,
+                video_copy=probe.video_copy,
+                audio_copy=probe.audio_copy,
+                audio_ordinal=max(0, audio_ordinal),
+                start_sec=max(0.0, start_sec),
+                out_dir=out_dir,
+                video_height=video_height,
+            )
+            use_remote = self._transcoder is not None
 
+        if use_remote:
+            remote = await self._transcoder.create_session(
+                info_hash=info_hash.lower(),
+                file_index=file_index,
+                relative_path=relative_path or file_path,
+                playback_mode=probe.playback_mode,
+                video_copy=probe.video_copy,
+                audio_copy=probe.audio_copy,
+                audio_index=max(0, audio_ordinal),
+                start_sec=max(0.0, start_sec),
+                video_height=video_height,
+                source_url=source_url,
+            )
+            session_id = remote["session_id"]
+            out_dir = Path(remote.get("out_dir") or (self.work_dir / session_id))
             session = TranscodeSession(
                 session_id=session_id,
                 info_hash=info_hash.lower(),
@@ -98,7 +140,14 @@ class TranscodeSessionManager:
                 audio_ordinal=max(0, audio_ordinal),
                 start_sec=max(0.0, start_sec),
                 out_dir=out_dir,
+                video_height=video_height,
+                remote_session=True,
+                ffmpeg_started=True,
             )
+        else:
+            session = local_session
+
+        async with self._lock:
             self._sessions[session_id] = session
             return session
 
@@ -110,8 +159,8 @@ class TranscodeSessionManager:
             return session
 
     async def session_count(self) -> int:
+        await self._purge_expired()
         async with self._lock:
-            self._purge_expired_unlocked()
             return len(self._sessions)
 
     async def stop(self, session_id: str) -> None:
@@ -119,8 +168,11 @@ class TranscodeSessionManager:
             session = self._sessions.pop(session_id, None)
         if not session:
             return
+        if session.remote_session and self._transcoder is not None:
+            await self._transcoder.stop_session(session_id)
         terminate_process(session.process)
-        shutil.rmtree(session.out_dir, ignore_errors=True)
+        if not session.remote_session:
+            shutil.rmtree(session.out_dir, ignore_errors=True)
 
     def mark_playlist_complete_if_ffmpeg_done(self, session: TranscodeSession) -> None:
         proc = session.process
@@ -128,6 +180,9 @@ class TranscodeSessionManager:
             finalize_hls_playlist(session.out_dir)
 
     async def ensure_ffmpeg(self, session: TranscodeSession) -> None:
+        if session.remote_session and session.ffmpeg_started:
+            session.last_access = time.time()
+            return
         if session.ffmpeg_started and session.process and session.process.returncode is None:
             session.last_access = time.time()
             return
@@ -163,23 +218,27 @@ class TranscodeSessionManager:
     async def cleanup_loop(self, interval: float = 30.0) -> None:
         while True:
             await asyncio.sleep(interval)
-            async with self._lock:
-                self._purge_expired_unlocked()
+            await self._purge_expired()
 
-    def _purge_expired_unlocked(self) -> None:
-        now = time.time()
-        expired = [
-            sid
-            for sid, s in self._sessions.items()
-            if now - s.last_access > self.ttl_sec
-        ]
+    async def _purge_expired(self) -> None:
+        async with self._lock:
+            now = time.time()
+            expired = [
+                sid
+                for sid, s in self._sessions.items()
+                if now - s.last_access > self.ttl_sec
+            ]
         for sid in expired:
-            session = self._sessions.pop(sid, None)
-            if session:
-                terminate_process(session.process)
-                shutil.rmtree(session.out_dir, ignore_errors=True)
-                logger.info("transcode session expired: %s", sid)
+            await self.stop(sid)
+            logger.info("transcode session expired: %s", sid)
 
 
-async def wait_playlist_ready(session: TranscodeSession, timeout: float = 120.0) -> bool:
+async def wait_playlist_ready(
+    session: TranscodeSession,
+    timeout: float = 120.0,
+    *,
+    transcoder: "TranscoderClient | None" = None,
+) -> bool:
+    if session.remote_session and transcoder is not None:
+        return await transcoder.wait_playlist(session.session_id, session.out_dir, timeout)
     return await wait_for_playlist(session.out_dir, timeout)

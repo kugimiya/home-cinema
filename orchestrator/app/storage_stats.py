@@ -5,6 +5,8 @@ from pathlib import Path
 
 import shutil
 
+_SKIP_DIR_NAMES = frozenset({".engine"})
+
 
 def torrent_hash_dir_size(base: Path, info_hash: str) -> int:
     path = base / info_hash.lower()
@@ -20,13 +22,56 @@ def torrent_hash_dir_size(base: Path, info_hash: str) -> int:
     return total
 
 
+def torrent_on_disk_bytes(
+    base: Path,
+    info_hash: str,
+    file_paths: list[str],
+    *,
+    loaded_size: int | None = None,
+) -> int:
+    """Bytes on disk for a torrent (libtorrent uses save_path/name, not hash subdirs)."""
+    hash_dir = torrent_hash_dir_size(base, info_hash)
+    if hash_dir > 0:
+        return hash_dir
+
+    from app.media_paths import find_torrent_media_file
+
+    total = 0
+    seen: set[str] = set()
+    for rel in file_paths:
+        if not rel.strip():
+            continue
+        found = find_torrent_media_file(base, rel)
+        if found is None:
+            continue
+        key = str(found.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            total += found.stat().st_size
+        except OSError:
+            continue
+    if total > 0:
+        return total
+    if loaded_size and loaded_size > 0:
+        return loaded_size
+    return 0
+
+
 def torrents_data_bytes(base: Path) -> int:
     if not base.is_dir():
         return 0
     total = 0
-    for entry in base.iterdir():
-        if entry.is_dir():
-            total += torrent_hash_dir_size(base, entry.name)
+    for root, dirs, files in os.walk(base):
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIR_NAMES and not d.startswith(".")]
+        for name in files:
+            if name.startswith("."):
+                continue
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                continue
     return total
 
 

@@ -11,12 +11,29 @@ def _file_length(entry: dict[str, Any]) -> int:
     return int(entry.get("length") or entry.get("Length") or 0)
 
 
+def progress_from_file_stats(files: list[dict[str, Any]]) -> dict[int, dict[str, int]]:
+    """Progress map from torrent-engine file_stats entries."""
+    result: dict[int, dict[str, int]] = {}
+    for f in files:
+        fid = _file_id(f)
+        if fid <= 0:
+            continue
+        result[fid] = {
+            "downloaded": int(f.get("downloaded_bytes") or 0),
+            "priority": int(f.get("priority") or 0),
+        }
+    return result
+
+
 def progress_from_cache(
     files: list[dict[str, Any]], cache: dict[str, Any] | None
 ) -> dict[int, dict[str, int]]:
-    """Map TorrServer cache pieces to per-file downloaded bytes and priority."""
+    """Map legacy piece cache or torrent-engine file_stats to per-file progress."""
     if not files:
         return {}
+
+    if cache and isinstance(cache.get("_engine_files"), list):
+        return progress_from_file_stats(cache["_engine_files"])
 
     sorted_files = sorted(files, key=_file_id)
     spans: list[tuple[int, int, int]] = []
@@ -27,16 +44,14 @@ def progress_from_cache(
         spans.append((fid, start, start + length))
         start += length
 
+    piece_len = int(cache.get("PiecesLength") or cache.get("piecesLength") or 0) if cache else 0
+    pieces = (cache.get("Pieces") or cache.get("pieces") or {}) if cache else {}
+    if not piece_len or not isinstance(pieces, dict):
+        return progress_from_file_stats(files)
+
     result: dict[int, dict[str, int]] = {
         _file_id(f): {"downloaded": 0, "priority": 0} for f in sorted_files
     }
-    if not cache:
-        return result
-
-    piece_len = int(cache.get("PiecesLength") or cache.get("piecesLength") or 0)
-    pieces = cache.get("Pieces") or cache.get("pieces") or {}
-    if not piece_len or not isinstance(pieces, dict):
-        return result
 
     def file_for_offset(offset: int) -> int | None:
         for fid, begin, end in spans:
@@ -72,7 +87,7 @@ def upload_bytes_per_file(
     progress: dict[int, dict[str, int]],
     bytes_written_data: int | None,
 ) -> dict[int, int]:
-    """Estimate per-file upload from torrent totals (TorrServer has no per-file upload API)."""
+    """Estimate per-file upload from torrent totals (engine has no per-file upload API)."""
     total_upload = max(0, int(bytes_written_data or 0))
     file_ids = list(progress.keys())
     if total_upload == 0 or not file_ids:

@@ -8,7 +8,9 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_IDS = frozenset({"torrserver", "torapi", "orchestrator"})
+ALLOWED_IDS = frozenset(
+    {"torrent-engine", "transcoder", "torapi", "orchestrator"}
+)
 
 
 class DockerControl:

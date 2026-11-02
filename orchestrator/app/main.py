@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from collections.abc import Callable
 from typing import Optional
@@ -13,17 +14,15 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from app.clients.torrserver import (
-    TorrServerClient,
-    _extract_files,
-    file_index_and_path,
-    info_hash_from_magnet,
-)
+from app.clients.torrent_factory import build_torrent_engine_client
+from app.clients.transcoder import TranscoderClient
+from app.torrent_files import extract_files, file_index_and_path, info_hash_from_magnet
 from app.config import Settings
 from app.file_progress import progress_from_cache, upload_bytes_per_file
 from app.media_files import build_media_catalog, media_kind_for_path
 from app.models import (
     DownloadScopeBody,
+    PlaybackEndedBody,
     MediaKind,
     PlayRequest,
     PlayResponse,
@@ -41,18 +40,20 @@ from app.models import (
     TranscodeSessionRequest,
     TranscodeSessionResponse,
     SystemStatusResponse,
+    EngineDiagnosticsResponse,
     WarmProbeStartResponse,
     WarmProbeStatusResponse,
 )
+from app.playback_probe import ProbeResult
 from app.play_select_progress import PlaySelectPhase, PlaySelectProgressStore
 from app.transcode_ffmpeg import is_hls_playlist_complete
 from app.transcode_sessions import TranscodeSessionManager, wait_playlist_ready
-from app.storage_stats import storage_summary, torrent_hash_dir_size
+from app.storage_stats import storage_summary, torrent_on_disk_bytes
 from app.providers.rutor import RuTorClient
 from app.providers.torapi import TorAPIClient
 from app.search_service import SearchService
 from app.store import MetaStore, TorrentMeta
-from app.torr_cache import TorrStateCache
+from app.torrent_cache import TorrentStateCache
 from app.activity_tracker import ActivityTracker
 from app.discovery import MdnsAdvertiser, build_discover_payload
 from app.docker_control import DockerControl
@@ -66,6 +67,7 @@ from app.probe_warm import (
     warm_summary_for_hash,
 )
 from app.system_status import build_system_status, _truncate as activity_truncate
+from app.engine_diagnostics import fetch_engine_diagnostics
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -76,32 +78,27 @@ _prepared_no_download: set[str] = set()
 torapi = TorAPIClient(settings.torapi_url, settings.search_timeout)
 rutor = RuTorClient(settings.search_timeout)
 search_service = SearchService(torapi, rutor)
-torr = TorrServerClient(
-    settings.torrserver_url,
-    settings.torrserver_public_url,
-    settings.torrents_save_path,
-    settings.play_metadata_timeout,
-    settings.torrserver_request_timeout,
-    settings.torrserver_list_timeout,
-    settings.torrserver_cache_size_mb,
-    settings.torrserver_preload_cache,
-    settings.torrserver_connections_limit,
-    settings.torrserver_reader_read_ahead,
-    settings.torrserver_priority_concurrency,
-)
+torrent_engine = build_torrent_engine_client(settings)
+_transcoder: TranscoderClient | None = None
+if settings.transcoder_enabled:
+    _transcoder = TranscoderClient(
+        settings.transcoder_url,
+        settings.torrent_engine_save_path,
+    )
 transcode_mgr = TranscodeSessionManager(
     settings.transcode_work_dir,
     settings.transcode_max_sessions,
     settings.transcode_session_ttl_sec,
     settings.orchestrator_public_url,
+    transcoder=_transcoder,
 )
-torr_cache = TorrStateCache(torr)
+torrent_cache = TorrentStateCache(torrent_engine)
 activity_tracker = ActivityTracker()
 
 
 async def _probe_warm_fetch_cache(info_hash: str) -> dict:
-    item = await torr_cache.find_list_item(info_hash)
-    data = await torr_cache.get_cache_pieces(info_hash, list_item=item)
+    item = await torrent_cache.find_list_item(info_hash)
+    data = await torrent_cache.get_cache_pieces(info_hash, list_item=item)
     return data if isinstance(data, dict) else {}
 
 
@@ -109,13 +106,13 @@ probe_cache = ProbeCacheStore(settings.database_path)
 _probe_head_dir = Path(settings.transcode_work_dir) / "probe_heads"
 probe_runner = ProbeRunner(
     store=probe_cache,
-    torr=torr,
-    torr_cache=torr_cache,
+    torrent_engine=torrent_engine,
+    torrent_cache=torrent_cache,
     settings=settings,
     head_dir=_probe_head_dir,
 )
 probe_warm = ProbeWarmManager(
-    torr,
+    torrent_engine,
     activity_tracker,
     warm_bytes=settings.probe_warm_bytes,
     auto_files=settings.probe_warm_files,
@@ -130,11 +127,37 @@ docker_control = DockerControl(
     enabled=settings.service_restart_enabled,
     socket_path=settings.docker_socket_path,
     container_names={
-        "torrserver": settings.docker_container_torrserver,
+        "torrent-engine": settings.docker_container_torrent_engine,
+        "transcoder": settings.docker_container_transcoder,
         "torapi": settings.docker_container_torapi,
         "orchestrator": settings.docker_container_orchestrator,
     },
 )
+
+QUALITY_PRESETS = (240, 320, 480, 720, 1080, 1440)
+
+
+def _needs_transcode_for_quality(probe, video_height: int | None) -> bool:
+    if video_height is None:
+        return probe.playback_mode != "direct"
+    if probe.playback_mode != "direct":
+        return True
+    return video_height > 0
+
+
+def _probe_for_transcode_session(probe, *, video_height: int | None) -> ProbeResult:
+    """Apply scale / transcode flags for a new ffmpeg session."""
+    if video_height is None or video_height <= 0:
+        return probe
+    mode = probe.playback_mode
+    if mode == "direct":
+        mode = "hls_transcode"
+    return replace(
+        probe,
+        playback_mode=mode,
+        video_copy=False,
+        direct_playable=False,
+    )
 _last_search_query: str | None = None
 _last_search_at: float | None = None
 
@@ -148,8 +171,8 @@ _mdns = MdnsAdvertiser(
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    await torr.wait_ready()
-    await torr.bootstrap_disk_settings()
+    await torrent_engine.wait_ready()
+    await torrent_engine.bootstrap_disk_settings()
     Path(settings.transcode_work_dir).mkdir(parents=True, exist_ok=True)
     _mdns.start()
     cleanup_task = asyncio.create_task(transcode_mgr.cleanup_loop())
@@ -186,7 +209,7 @@ async def api_discover(request: Request) -> dict[str, str]:
         request,
         version="0.1.0",
         orchestrator_public_url=settings.orchestrator_public_url,
-        torrserver_public_url=settings.torrserver_public_url,
+        torrent_engine_public_url=settings.torrent_engine_public_url,
         default_api_port=settings.orchestrator_listen_port,
     )
     return payload.as_dict()
@@ -205,9 +228,9 @@ async def api_search(q: str = Query(..., min_length=1)) -> SearchResponse:
 @app.get("/api/system/status", response_model=SystemStatusResponse)
 async def api_system_status() -> SystemStatusResponse:
     return await build_system_status(
-        torrserver_url=settings.torrserver_url,
+        torrent_engine_url=settings.torrent_engine_url,
         torapi_url=settings.torapi_url,
-        torr_cache=torr_cache,
+        torrent_cache=torrent_cache,
         activity=activity_tracker,
         transcode_mgr=transcode_mgr,
         docker=docker_control,
@@ -226,6 +249,19 @@ async def api_system_restart(service_id: str) -> dict[str, str]:
     except (ValueError, RuntimeError) as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
     return {"status": "restarting", "id": service_id}
+
+
+@app.get("/api/engine/diagnostics", response_model=EngineDiagnosticsResponse)
+async def api_engine_diagnostics(
+    alert_limit: int = Query(120, ge=1, le=400),
+) -> EngineDiagnosticsResponse:
+    return await fetch_engine_diagnostics(
+        torrent_engine_url=settings.torrent_engine_url,
+        activity=activity_tracker,
+        transcode_mgr=transcode_mgr,
+        probe_warm=probe_warm,
+        alert_limit=alert_limit,
+    )
 
 
 @app.get("/api/releases/{provider}/{external_id}", response_model=ReleaseDetail)
@@ -247,7 +283,7 @@ def _catalog_from_raw(info_hash: str, raw: list) -> list[TorrentMediaFile]:
     def stream_for(idx: int, path: str) -> str | None:
         kind = media_kind_for_path(path)
         if kind in (MediaKind.video, MediaKind.subtitle, MediaKind.audio):
-            return torr.build_stream_url(h, path, idx)
+            return torrent_engine.build_stream_url(h, path, idx)
         return None
 
     return build_media_catalog(raw, stream_url_for=stream_for)
@@ -255,8 +291,8 @@ def _catalog_from_raw(info_hash: str, raw: list) -> list[TorrentMediaFile]:
 
 async def _media_catalog(info_hash: str) -> list[TorrentMediaFile]:
     async with activity_tracker.track("prepare", info_hash[:8]):
-        detail = await torr_cache.get_torrent_detail(info_hash)
-    raw = _extract_files(detail)
+        detail = await torrent_cache.get_torrent_detail(info_hash)
+    raw = extract_files(detail)
     if not raw:
         raise HTTPException(status_code=504, detail="No files in torrent metadata")
     return _catalog_from_raw(info_hash, raw)
@@ -318,25 +354,47 @@ async def _create_transcode_playback(
     file_length: int = 0,
     audio_index: int = 0,
     start_sec: float = 0.0,
+    video_height: int | None = None,
     background_tasks: BackgroundTasks | None = None,
 ) -> PlayResponse:
+    probe_use = _probe_for_transcode_session(probe, video_height=video_height)
+    await torrent_engine.heartbeat(info_hash, [file_index], stream_active=True)
     try:
         session = await transcode_mgr.create_session(
             info_hash=info_hash,
             file_index=file_index,
             file_path=file_path,
-            source_url=torr.build_internal_stream_url(info_hash, file_path, file_index),
-            probe=probe,
+            source_url=torrent_engine.build_internal_stream_url(info_hash, file_path, file_index),
+            probe=probe_use,
             audio_ordinal=audio_index,
             start_sec=start_sec,
+            video_height=video_height,
+            relative_path=file_path,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
+    except httpx.HTTPStatusError as e:
+        detail = _http_error_detail(e)
+        code = e.response.status_code if e.response is not None else 502
+        if code == 503:
+            raise HTTPException(status_code=503, detail=detail or "Transcoder busy") from e
+        raise HTTPException(status_code=502, detail=f"transcoder: {detail}") from e
 
-    if background_tasks is not None:
-        background_tasks.add_task(_start_ffmpeg_session, session.session_id)
-    else:
-        await _start_ffmpeg_session(session.session_id)
+    if not session.remote_session:
+        if background_tasks is not None:
+            background_tasks.add_task(_start_ffmpeg_session, session.session_id)
+        else:
+            await _start_ffmpeg_session(session.session_id)
+
+    ready = await wait_playlist_ready(
+        session, timeout=120.0, transcoder=_transcoder
+    )
+    if not ready:
+        await transcode_mgr.stop(session.session_id)
+        raise HTTPException(
+            status_code=503,
+            detail="Перекодирование не запустилось (ffmpeg). Проверьте лог transcoder или попробуйте снова.",
+        )
 
     return PlayResponse(
         hash=info_hash,
@@ -362,6 +420,7 @@ async def _playback_for_video(
     *,
     audio_index: int = 0,
     start_sec: float = 0.0,
+    video_height: int | None = None,
     background_tasks: BackgroundTasks | None = None,
     on_probe_attempt: Callable[[int, int], None] | None = None,
     on_probe_live: Callable[[ProbeLiveStats], None] | None = None,
@@ -394,7 +453,10 @@ async def _playback_for_video(
         "file_length": selected.length,
     }
 
-    if probe.playback_mode == "direct":
+    use_direct = probe.playback_mode == "direct" and not _needs_transcode_for_quality(
+        probe, video_height
+    )
+    if use_direct:
         return (
             PlayResponse(
                 hash=info_hash,
@@ -431,6 +493,7 @@ async def _playback_for_video(
         file_length=selected.length,
         audio_index=audio_index,
         start_sec=start_sec,
+        video_height=video_height,
         background_tasks=background_tasks,
     )
     return resp, probe
@@ -455,13 +518,16 @@ def _select_video_file(
     return None
 
 
-async def _resolve_magnet_and_meta(body: PlayRequest) -> tuple[str, str, Optional[str], Optional[str], Optional[str], Optional[str]]:
+async def _resolve_magnet_and_meta(
+    body: PlayRequest,
+) -> tuple[str, str, Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
     magnet = body.magnet
     title = body.title or "Untitled"
     quality: Optional[str] = None
     voice: Optional[str] = None
     provider_str: Optional[str] = None
     external_id: Optional[str] = None
+    torrent_url: Optional[str] = None
 
     if body.provider and body.external_id:
         try:
@@ -474,16 +540,17 @@ async def _resolve_magnet_and_meta(body: PlayRequest) -> tuple[str, str, Optiona
         voice = detail.voice
         provider_str = body.provider.value
         external_id = body.external_id
+        torrent_url = detail.torrent_url
 
     if not magnet:
         raise HTTPException(status_code=400, detail="magnet link is required")
-    return magnet, title, quality, voice, provider_str, external_id
+    return magnet, title, quality, voice, provider_str, external_id, torrent_url
 
 
 @app.get("/api/torrents/{info_hash}/media", response_model=PlayResponse)
 async def api_torrent_media(info_hash: str) -> PlayResponse:
     h = info_hash.lower()
-    detail = await torr_cache.get_torrent_detail(h)
+    detail = await torrent_cache.get_torrent_detail(h)
     if not detail:
         raise HTTPException(status_code=404, detail="Torrent not found")
     files = await _media_catalog(h)
@@ -498,10 +565,10 @@ async def api_torrent_prepare(info_hash: str) -> PrepareResponse:
     meta = store.get(h)
     try:
         async with activity_tracker.track("prepare", h[:8]):
-            detail = await torr_cache.get_torrent_detail(h)
+            detail = await torrent_cache.get_torrent_detail(h)
     except httpx.HTTPError as e:
         raise HTTPException(
-            status_code=502, detail=f"TorrServer: {_http_error_detail(e)}"
+            status_code=502, detail=f"torrent-engine: {_http_error_detail(e)}"
         ) from e
 
     if not detail:
@@ -513,7 +580,7 @@ async def api_torrent_prepare(info_hash: str) -> PrepareResponse:
             title=meta.title if meta else h,
             phase="missing",
             message=(
-                "TorrServer не смог получить метаданные (таймаут или раздача удалена)."
+                "torrent-engine не смог получить метаданные (таймаут или раздача удалена)."
                 f"{retry} Проверьте VPN/доступ к BitTorrent или выберите другую раздачу."
             ),
             ready=False,
@@ -522,7 +589,7 @@ async def api_torrent_prepare(info_hash: str) -> PrepareResponse:
     title = detail.get("title") or (meta.title if meta else h)
     stat = detail.get("stat_string") or "ожидание"
     peers = detail.get("total_peers")
-    raw = _extract_files(detail)
+    raw = extract_files(detail)
     if not raw:
         hint = (
             " Большие сборники (сотни серий) могут ждать метаданные несколько минут."
@@ -560,15 +627,20 @@ async def api_torrent_prepare(info_hash: str) -> PrepareResponse:
 
 @app.post("/api/play/prepare", response_model=PrepareResponse)
 async def api_play_prepare(body: PlayRequest) -> PrepareResponse:
-    magnet, title, quality, voice, provider_str, external_id = await _resolve_magnet_and_meta(
-        body
+    magnet, title, quality, voice, provider_str, external_id, torrent_url = (
+        await _resolve_magnet_and_meta(body)
     )
 
     try:
         async with activity_tracker.track("prepare", "add"):
-            added = await torr_cache.ensure_torrent(magnet, title, save_to_db=True)
+            added = await torrent_cache.ensure_torrent(
+                magnet,
+                title,
+                save_to_db=True,
+                torrent_url=torrent_url,
+            )
     except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"TorrServer add failed: {e}") from e
+        raise HTTPException(status_code=502, detail=f"torrent-engine add failed: {e}") from e
 
     info_hash = (added.get("hash") or info_hash_from_magnet(magnet) or "").lower()
     if not info_hash:
@@ -677,19 +749,19 @@ async def api_play_select(
         )
 
     try:
-        set_progress(1, "torrent", "Этап 1: получаем состояние раздачи в TorrServer…")
+        set_progress(1, "torrent", "Этап 1: получаем состояние раздачи…")
         try:
             async with activity_tracker.track("play_select", h[:8]):
-                detail = await torr_cache.get_torrent_detail(h)
+                detail = await torrent_cache.get_torrent_detail(h)
         except httpx.HTTPError as e:
             raise HTTPException(
-                status_code=502, detail=f"TorrServer: {_http_error_detail(e)}"
+                status_code=502, detail=f"torrent-engine: {_http_error_detail(e)}"
             ) from e
         if not detail:
             raise HTTPException(status_code=404, detail="Torrent not found")
 
         title = detail.get("title") or (meta.title if meta else h)
-        raw = _extract_files(detail)
+        raw = extract_files(detail)
         if not raw:
             raise HTTPException(status_code=504, detail="No files in torrent metadata")
         catalog = _catalog_from_raw(h, raw)
@@ -705,15 +777,15 @@ async def api_play_select(
         active = [body.file_index, *body.subtitle_file_ids]
         try:
             for file_id in active:
-                await torr.set_file_priority(h, file_id, 7)
+                await torrent_engine.set_file_priority(h, file_id, 7)
         except httpx.HTTPError as e:
             raise HTTPException(
                 status_code=502,
                 detail=f"Could not enable download for selected file: {_http_error_detail(e)}",
             ) from e
 
-        torr_cache.invalidate_hash(h, ["list", "cache"])
-        background_tasks.add_task(torr.configure_download_files, h, active, raw)
+        torrent_cache.invalidate_hash(h, ["list", "cache"])
+        background_tasks.add_task(torrent_engine.configure_download_files, h, active, raw)
 
         def on_probe_attempt(attempt: int, total: int) -> None:
             nonlocal current_probe_attempt
@@ -730,6 +802,7 @@ async def api_play_select(
         playback, _probe = await _playback_for_video(
             h,
             selected,
+            video_height=body.video_height,
             background_tasks=background_tasks,
             on_probe_attempt=on_probe_attempt,
             on_probe_live=apply_probe_live,
@@ -767,13 +840,13 @@ async def api_transcode_session(
     h = body.hash.lower()
     try:
         async with activity_tracker.track("transcode", h[:8]):
-            detail = await torr_cache.get_torrent_detail(h)
+            detail = await torrent_cache.get_torrent_detail(h)
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=_http_error_detail(e)) from e
     if not detail:
         raise HTTPException(status_code=404, detail="Torrent not found")
 
-    raw = _extract_files(detail)
+    raw = extract_files(detail)
     catalog = _catalog_from_raw(h, raw)
     selected = _select_video_file(catalog, body.file_index)
     if not selected:
@@ -793,7 +866,9 @@ async def api_transcode_session(
                 status_code=503,
                 detail="Файл ещё не готов для перекодирования. Подождите загрузку.",
             )
-    if probe.playback_mode == "direct":
+    if probe.playback_mode == "direct" and not _needs_transcode_for_quality(
+        probe, body.video_height
+    ):
         raise HTTPException(
             status_code=400,
             detail="Direct playback — transcode session not required",
@@ -802,24 +877,39 @@ async def api_transcode_session(
     if body.replace_session_id:
         await transcode_mgr.stop(body.replace_session_id.strip())
 
+    probe_use = _probe_for_transcode_session(probe, video_height=body.video_height)
     try:
         session = await transcode_mgr.create_session(
             info_hash=h,
             file_index=selected.id,
             file_path=selected.path,
-            source_url=torr.build_internal_stream_url(h, selected.path, selected.id),
-            probe=probe,
+            source_url=torrent_engine.build_internal_stream_url(h, selected.path, selected.id),
+            probe=probe_use,
             audio_ordinal=body.audio_index,
             start_sec=body.start_sec,
+            video_height=body.video_height,
+            relative_path=selected.path,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
 
-    background_tasks.add_task(_start_ffmpeg_session, session.session_id)
+    if not session.remote_session:
+        background_tasks.add_task(_start_ffmpeg_session, session.session_id)
+    else:
+        await torrent_engine.heartbeat(h, [selected.id], stream_active=True)
+    ready = await wait_playlist_ready(
+        session, timeout=120.0, transcoder=_transcoder
+    )
+    if not ready:
+        await transcode_mgr.stop(session.session_id)
+        raise HTTPException(
+            status_code=503,
+            detail="Перекодирование не запустилось (ffmpeg). Попробуйте снова.",
+        )
     return TranscodeSessionResponse(
         session_id=session.session_id,
         playback_url=transcode_mgr.playback_url(session.session_id),
-        playback_mode=probe.playback_mode,
+        playback_mode=probe_use.playback_mode,
         selected_audio_index=body.audio_index,
         start_sec=body.start_sec,
         audio_tracks=probe.audio_tracks,
@@ -854,7 +944,9 @@ async def api_transcode_file(session_id: str, filename: str):
     await transcode_mgr.ensure_ffmpeg(session)
     transcode_mgr.mark_playlist_complete_if_ffmpeg_done(session)
     if filename.endswith(".m3u8"):
-        ready = await wait_playlist_ready(session, timeout=180.0)
+        ready = await wait_playlist_ready(
+            session, timeout=180.0, transcoder=_transcoder
+        )
         if not ready:
             raise HTTPException(
                 status_code=503,
@@ -888,21 +980,33 @@ async def api_transcode_file(session_id: str, filename: str):
 async def api_download_scope(info_hash: str, body: DownloadScopeBody) -> dict[str, str]:
     h = info_hash.lower()
     try:
-        await torr.configure_download_files(h, body.file_ids)
+        await torrent_engine.configure_download_files(h, body.file_ids)
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
-    torr_cache.invalidate_hash(h, ["list", "cache"])
+    torrent_cache.invalidate_hash(h, ["list", "cache"])
     return {"status": "ok", "hash": h}
+
+
+@app.post("/api/torrents/{info_hash}/playback-ended")
+async def api_playback_ended(info_hash: str, body: PlaybackEndedBody) -> dict[str, str]:
+    h = info_hash.lower()
+    file_ids = body.file_ids or []
+    try:
+        await torrent_engine.playback_ended(h, file_ids)
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    torrent_cache.invalidate_hash(h, ["list", "cache"])
+    return {"status": "completing", "hash": h}
 
 
 @app.post("/api/torrents/{info_hash}/pause-download")
 async def api_pause_download(info_hash: str) -> dict[str, str]:
     h = info_hash.lower()
     try:
-        await torr.pause_all_files(h)
+        await torrent_engine.pause_all_files(h)
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
-    torr_cache.invalidate_hash(h, ["list", "cache"])
+    torrent_cache.invalidate_hash(h, ["list", "cache"])
     probe_warm.cancel_hash(h)
     return {"status": "paused", "hash": h}
 
@@ -926,12 +1030,12 @@ async def api_warm_probe_start(info_hash: str) -> WarmProbeStartResponse:
         )
     h = info_hash.lower()
     try:
-        detail = await torr_cache.get_torrent_detail(h)
+        detail = await torrent_cache.get_torrent_detail(h)
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=_http_error_detail(e)) from e
     if not detail:
         raise HTTPException(status_code=404, detail="Torrent not found")
-    raw = _extract_files(detail)
+    raw = extract_files(detail)
     if not raw:
         raise HTTPException(status_code=504, detail="No files in torrent metadata")
     queued, skipped = await probe_warm.schedule_manual(h, raw)
@@ -944,7 +1048,7 @@ async def api_play(body: PlayRequest) -> PlayResponse:
     prepared = await api_play_prepare(body)
     if not prepared.ready:
         try:
-            await torr.wait_for_files(prepared.hash)
+            await torrent_engine.wait_for_files(prepared.hash)
         except TimeoutError as e:
             raise HTTPException(status_code=504, detail=str(e)) from e
         prepared = await api_torrent_prepare(prepared.hash)
@@ -1042,7 +1146,7 @@ def _entry_from_list_item(
         return None
     file_stats_raw = item.get("file_stats") or []
     if not file_stats_raw:
-        file_stats_raw = _extract_files(item)
+        file_stats_raw = extract_files(item)
     dl_speed = _torrent_download_speed(item)
     reported_upload = _torrent_bytes_written_data(item)
     lifetime_upload = store.sync_upload_lifetime(h, reported_upload)
@@ -1054,12 +1158,37 @@ def _entry_from_list_item(
     )
     file_stats = overlay_warm_on_stats(file_stats, h, probe_warm)
     video_count = sum(1 for f in file_stats if f.kind == MediaKind.video)
+    loaded_size = item.get("loaded_size")
+    try:
+        loaded_size = int(loaded_size) if loaded_size is not None else None
+    except (TypeError, ValueError):
+        loaded_size = None
+    if not loaded_size:
+        loaded_size = sum(int(f.downloaded_bytes) for f in file_stats)
+    torrent_size = item.get("torrent_size")
+    try:
+        torrent_size = int(torrent_size) if torrent_size is not None else None
+    except (TypeError, ValueError):
+        torrent_size = None
+    if not torrent_size:
+        torrent_size = sum(int(f.length) for f in file_stats) or None
+    file_paths = [
+        str(f.get("path") or f.get("Path") or "")
+        for f in file_stats_raw
+        if f.get("path") or f.get("Path")
+    ]
+    on_disk = torrent_on_disk_bytes(
+        torrents_base,
+        h,
+        file_paths,
+        loaded_size=loaded_size,
+    )
     return TorrentEntry(
         hash=h,
         title=item.get("title") or (meta.title if meta else h),
         stat_string=item.get("stat_string"),
-        torrent_size=item.get("torrent_size"),
-        loaded_size=item.get("loaded_size"),
+        torrent_size=torrent_size,
+        loaded_size=loaded_size,
         preloaded_bytes=item.get("preloaded_bytes"),
         bytes_written_data=reported_upload,
         uploaded_bytes=lifetime_upload,
@@ -1072,7 +1201,7 @@ def _entry_from_list_item(
         search_query=meta.search_query if meta else None,
         provider=meta.provider if meta else None,
         file_stats=file_stats,
-        on_disk_bytes=torrent_hash_dir_size(torrents_base, h),
+        on_disk_bytes=on_disk,
         warm_summary=warm_summary_for_hash(h, probe_warm, video_count),
         probe_warm_enabled=probe_warm.enabled,
     )
@@ -1084,8 +1213,8 @@ async def api_torrents(
 ) -> TorrentListResponse:
     detail_hashes = {h.strip().lower() for h in (detail or "").split(",") if h.strip()}
     async with activity_tracker.track("torrents_list", None):
-        items = await torr_cache.list_items(max_age=TorrStateCache.LIST_TTL_LIBRARY)
-    torrents_base = Path(settings.torrents_save_path)
+        items = await torrent_cache.list_items(max_age=TorrentStateCache.LIST_TTL_LIBRARY)
+    torrents_base = Path(settings.torrent_engine_save_path)
     items_by_hash = {(item.get("hash") or "").lower(): item for item in items}
 
     cache_by_hash: dict[str, dict] = {}
@@ -1094,7 +1223,7 @@ async def api_torrents(
         item = items_by_hash.get(h) or {}
         if not item:
             return h, {}
-        data = await torr_cache.get_cache_pieces(h, list_item=item)
+        data = await torrent_cache.get_cache_pieces(h, list_item=item)
         return h, data
 
     if detail_hashes:
@@ -1110,7 +1239,7 @@ async def api_torrents(
         if entry:
             entries.append(entry)
 
-    summary = storage_summary(settings.torrents_save_path)
+    summary = storage_summary(settings.torrent_engine_save_path)
     return TorrentListResponse(
         storage=StorageSummary(**summary),
         torrents=entries,
@@ -1124,15 +1253,15 @@ async def api_delete_torrent(
 ) -> dict[str, str]:
     h = info_hash.lower()
     try:
-        await torr.drop_torrent(h)
+        await torrent_engine.drop_torrent(h)
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
     if delete_files:
-        torr.delete_cache_dir(h)
+        torrent_engine.delete_cache_dir(h)
     store.delete(h)
     probe_cache.delete_hash(h)
     remove_hash_heads(_probe_head_dir, h)
     probe_warm.cancel_hash(h)
-    torr_cache.remove_hash(h)
-    torr_cache.invalidate_list()
+    torrent_cache.remove_hash(h)
+    torrent_cache.invalidate_list()
     return {"status": "deleted", "hash": h}

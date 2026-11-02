@@ -177,7 +177,7 @@ export default function WatchSelectPage() {
                 <th>Качество</th>
                 <th>Озвучка (из имени)</th>
                 <th>Размер</th>
-                <th title="Доля upload TorrServer по скачанному объёму">Отдано</th>
+                <th title="Доля upload torrent-engine по скачанному объёму">Отдано</th>
                 <th>Прогрев</th>
                 <th />
               </tr>

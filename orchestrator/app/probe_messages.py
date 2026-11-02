@@ -3,6 +3,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+def probe_prefix_bytes_from_start(
+    *,
+    target: int,
+    head_bytes: int = 0,
+    local_file_size: int = 0,
+    torrent_downloaded: int = 0,
+) -> int:
+    """Bytes readable from offset 0 for ffprobe warm (never whole-torrent progress)."""
+    if target <= 0:
+        return 0
+    if head_bytes > 0:
+        return min(head_bytes, target)
+    if local_file_size > 0:
+        return min(local_file_size, target)
+    return min(torrent_downloaded, target)
+
+
 @dataclass
 class ProbeLiveStats:
     bytes_downloaded: int = 0
@@ -16,7 +33,7 @@ _SUBPHASE_LABEL: dict[str, str] = {
     "cache": "результат ffprobe из кэша",
     "prefetch_head": "подгрузка начала файла для ffprobe",
     "analyze_head": "ffprobe по сохранённой голове файла",
-    "analyze_stream": "ffprobe читает поток TorrServer",
+    "analyze_stream": "ffprobe читает поток раздачи",
     "retry_wait": "пауза перед повтором ffprobe",
 }
 
@@ -54,9 +71,13 @@ def format_probe_status_message(
     if stats.subphase in ("prefetch_head", "analyze_head", "analyze_stream"):
         parts.append(f"Попытка {attempt} из {attempt_max}.")
     if stats.bytes_target > 0:
-        parts.append(
-            f"С начала файла: {_fmt_bytes(stats.bytes_downloaded)} / {_fmt_bytes(stats.bytes_target)}."
-        )
+        show_bytes = True
+        if stats.subphase == "analyze_stream" and stats.bytes_downloaded > stats.bytes_target:
+            show_bytes = False
+        if show_bytes:
+            parts.append(
+                f"С начала файла: {_fmt_bytes(stats.bytes_downloaded)} / {_fmt_bytes(stats.bytes_target)}."
+            )
     if stats.download_speed is not None and stats.download_speed > 0:
         parts.append(f"Скорость: {_fmt_bytes(int(stats.download_speed))}/s.")
     elif stats.subphase == "prefetch_head":

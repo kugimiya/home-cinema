@@ -14,7 +14,7 @@
 
    ```env
    ORCHESTRATOR_PUBLIC_URL=http://192.168.x.x:3000
-   TORRSERVER_PUBLIC_URL=http://192.168.x.x:3000
+   TORRENT_ENGINE_PUBLIC_URL=http://192.168.x.x:3000
    ```
 
    Порты **8080** (API) и **3000** (nginx `/stream`) должны быть доступны с планшета/TV.

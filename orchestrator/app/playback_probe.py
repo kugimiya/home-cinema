@@ -107,6 +107,32 @@ def _duration_from_tags(tags: dict) -> Optional[float]:
     return None
 
 
+def estimate_duration_from_file_bytes(file_length: int) -> Optional[float]:
+    if file_length <= 0:
+        return None
+    megabytes = file_length / (1024 * 1024)
+    return megabytes * 2.0
+
+
+def resolve_probe_duration(
+    duration_sec: Optional[float], file_length: int
+) -> Optional[float]:
+    """Prefer full-file estimate when ffprobe only saw a partial buffer."""
+    api = duration_sec if duration_sec is not None and duration_sec > 0 else 0.0
+    estimate = estimate_duration_from_file_bytes(file_length)
+    if file_length <= 0:
+        return duration_sec
+    if estimate is None:
+        return duration_sec
+    if api <= 0:
+        return estimate
+    if api < 120 and estimate > api * 2.5:
+        return estimate
+    if file_length > 100 * 1024 * 1024 and api < 300 and estimate > api:
+        return estimate
+    return max(api, estimate)
+
+
 def extract_duration_sec(data: dict) -> Optional[float]:
     """Best-effort file duration from ffprobe JSON (format, streams, tags)."""
     fmt = data.get("format") or {}
@@ -222,7 +248,7 @@ async def _ffprobe_exec(
     *,
     on_tick: Callable[[int], None] | None = None,
 ) -> dict:
-    proc = await asyncio.create_subprocess_exec(
+    cmd: list[str] = [
         "ffprobe",
         "-v",
         "quiet",
@@ -230,7 +256,20 @@ async def _ffprobe_exec(
         "json",
         "-show_streams",
         "-show_format",
-        target,
+    ]
+    if "://" in target:
+        # Avoid scanning multi-GB MKV over HTTP (index at end of file).
+        cmd.extend(
+            [
+                "-probesize",
+                str(32 * 1024 * 1024),
+                "-analyzeduration",
+                str(15 * 1_000_000),
+            ]
+        )
+    cmd.append(target)
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

@@ -8,15 +8,14 @@ from typing import Any
 import httpx
 
 from app.activity_tracker import ActivitySnapshot, ActivityTracker
-from app.clients.torrserver import _extract_files
 from app.docker_control import DockerControl
 from app.models import ServiceStatus, SystemStatusResponse
-from app.torr_cache import TorrStateCache
+from app.torrent_cache import TorrentStateCache
+from app.torrent_files import extract_files
 from app.probe_warm import ProbeWarmManager
 from app.transcode_sessions import TranscodeSessionManager
 
-# Status bar must not hammer TorrServer `list` (heavy under load).
-TORRSERVER_LIST_MAX_AGE_STATUS = 30.0
+TORRENT_ENGINE_LIST_MAX_AGE_STATUS = 30.0
 
 
 def _truncate(s: str, n: int = 40) -> str:
@@ -40,7 +39,7 @@ async def _probe_http(url: str, path: str = "") -> tuple[bool, float, str | None
         return False, time.monotonic() - start, str(e) or type(e).__name__
 
 
-def _torrserver_activity(items: list[dict[str, Any]], cache_age: float | None) -> str:
+def _torrent_engine_activity(items: list[dict[str, Any]], cache_age: float | None) -> str:
     n = len(items)
     active = 0
     waiting = 0
@@ -52,7 +51,7 @@ def _torrserver_activity(items: list[dict[str, Any]], cache_age: float | None) -
                 continue
         except (TypeError, ValueError):
             pass
-        if not _extract_files(item):
+        if not extract_files(item):
             waiting += 1
     parts: list[str] = []
     if active:
@@ -92,7 +91,7 @@ def _orchestrator_activity(
     elif warm_queue > 0:
         parts.append(f"Прогрев probe: очередь {warm_queue}")
     elif list_in_progress:
-        parts.append("TorrServer: list")
+        parts.append("torrent-engine: list")
     if not parts:
         return "Свободен"
     return " · ".join(parts)
@@ -100,9 +99,9 @@ def _orchestrator_activity(
 
 async def build_system_status(
     *,
-    torrserver_url: str,
+    torrent_engine_url: str,
     torapi_url: str,
-    torr_cache: TorrStateCache,
+    torrent_cache: TorrentStateCache,
     activity: ActivityTracker,
     transcode_mgr: TranscodeSessionManager,
     docker: DockerControl,
@@ -110,18 +109,18 @@ async def build_system_status(
     last_search_query: str | None,
     last_search_at: float | None,
 ) -> SystemStatusResponse:
-    torr_ok, torr_elapsed, torr_err = await _probe_http(torrserver_url, "/")
+    engine_ok, engine_elapsed, engine_err = await _probe_http(torrent_engine_url, "/")
     torapi_ok, torapi_elapsed, torapi_err = await _probe_http(torapi_url, "/api/provider/list")
 
     items: list[dict[str, Any]] = []
-    cache_age = torr_cache.snapshot_age_sec()
-    if torr_ok:
+    cache_age = torrent_cache.snapshot_age_sec()
+    if engine_ok:
         try:
-            snapshot = await torr_cache.list_snapshot(
-                max_age=TORRSERVER_LIST_MAX_AGE_STATUS,
+            snapshot = await torrent_cache.list_snapshot(
+                max_age=TORRENT_ENGINE_LIST_MAX_AGE_STATUS,
             )
             items = list(snapshot.values())
-            cache_age = torr_cache.snapshot_age_sec()
+            cache_age = torrent_cache.snapshot_age_sec()
         except httpx.HTTPError:
             pass
 
@@ -129,9 +128,10 @@ async def build_system_status(
     tc_count = await transcode_mgr.session_count()
     warm_snap = probe_warm.activity_snapshot()
 
-    torr_state = "down"
-    if torr_ok:
-        torr_state = "degraded" if torr_elapsed > 2.0 else "ok"
+    engine_state = "down"
+    if engine_ok:
+        engine_state = "degraded" if engine_elapsed > 2.0 else "ok"
+
         def _dl(it: dict[str, Any]) -> float:
             v = it.get("download_speed")
             try:
@@ -140,7 +140,7 @@ async def build_system_status(
                 return 0.0
 
         if any(_dl(it) > 0 for it in items):
-            torr_state = "busy" if torr_state == "ok" else torr_state
+            engine_state = "busy" if engine_state == "ok" else engine_state
 
     torapi_state = "down"
     if torapi_ok:
@@ -149,7 +149,7 @@ async def build_system_status(
         torapi_state = "busy" if torapi_state != "down" else torapi_state
 
     orch_state = "ok"
-    if act.label or tc_count or torr_cache.list_fetch_in_progress or warm_snap.active:
+    if act.label or tc_count or torrent_cache.list_fetch_in_progress or warm_snap.active:
         orch_state = "busy"
 
     torapi_activity = "Свободен"
@@ -163,11 +163,13 @@ async def build_system_status(
 
     services = [
         ServiceStatus(
-            id="torrserver",
-            label="TorrServer",
-            state=torr_state,
-            activity=_torrserver_activity(items, cache_age) if torr_ok else f"Недоступен: {torr_err or 'ошибка'}",
-            restart_allowed=docker.restart_allowed("torrserver"),
+            id="torrent-engine",
+            label="Torrent engine",
+            state=engine_state,
+            activity=_torrent_engine_activity(items, cache_age)
+            if engine_ok
+            else f"Недоступен: {engine_err or 'ошибка'}",
+            restart_allowed=docker.restart_allowed("torrent-engine"),
         ),
         ServiceStatus(
             id="torapi",
@@ -184,7 +186,7 @@ async def build_system_status(
                 act,
                 tc_count,
                 transcode_mgr.max_sessions,
-                torr_cache.list_fetch_in_progress,
+                torrent_cache.list_fetch_in_progress,
                 warm_detail=warm_snap.detail,
                 warm_queue=warm_snap.queue_size,
             ),

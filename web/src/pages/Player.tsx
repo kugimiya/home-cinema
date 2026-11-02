@@ -2,11 +2,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import Hls from "hls.js";
 import {
+  absoluteMediaUrl,
   createTranscodeSession,
   deleteTranscodeSession,
   fetchPlaySelectStatus,
+  notifyPlaybackEnded,
   selectPlayFile,
   setDownloadScope,
+  VIDEO_QUALITY_PRESETS,
   subtitleFiles,
   formatBytes,
   formatPlaybackTime,
@@ -117,6 +120,7 @@ export default function PlayerPage() {
   const [selectedAudioIndex, setSelectedAudioIndex] = useState(
     initialState?.selected_audio_index ?? 0,
   );
+  const [videoHeight, setVideoHeight] = useState<number | null>(null);
   const [playbackStartSec, setPlaybackStartSec] = useState(0);
   const [timelineSec, setTimelineSec] = useState(0);
   const scrubbingRef = useRef(false);
@@ -159,11 +163,11 @@ export default function PlayerPage() {
 
   const attachedPlaybackUrlRef = useRef<string | null>(null);
 
-  const attachHls = useCallback((url: string) => {
+  const attachHls = useCallback((url: string, force = false) => {
     const video = videoRef.current;
     if (!video) return;
 
-    if (attachedPlaybackUrlRef.current === url && hlsRef.current) {
+    if (!force && attachedPlaybackUrlRef.current === url && hlsRef.current) {
       return;
     }
     attachedPlaybackUrlRef.current = url;
@@ -184,8 +188,22 @@ export default function PlayerPage() {
       hls.loadSource(url);
       hls.attachMedia(video);
       hls.on(Hls.Events.ERROR, (_e, data) => {
+        if (
+          data.fatal &&
+          data.type === Hls.ErrorTypes.NETWORK_ERROR &&
+          data.details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR
+        ) {
+          hls.startLoad();
+          return;
+        }
         if (data.fatal) {
-          setTranscodeError("Ошибка HLS-потока. Попробуйте обновить страницу.");
+          const detail =
+            data.response?.code != null
+              ? ` (HTTP ${data.response.code})`
+              : "";
+          setTranscodeError(
+            `Ошибка HLS-потока${detail}. Попробуйте обновить страницу.`,
+          );
         }
       });
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
@@ -195,24 +213,44 @@ export default function PlayerPage() {
     }
   }, []);
 
+  const currentFilePositionSec = useCallback(() => {
+    const video = videoRef.current;
+    if (showFullTimeline) {
+      return playbackStartSec + (video?.currentTime ?? 0);
+    }
+    return video?.currentTime ?? 0;
+  }, [playbackStartSec, showFullTimeline]);
+
   const replaceTranscodeSession = useCallback(
-    async (audioIndex: number, startSec: number) => {
+    async (
+      audioIndex: number,
+      startSec: number,
+      heightOverride?: number | null,
+    ) => {
       if (!state || !hlsMode) return;
       if (switchingRef.current) return;
       switchingRef.current = true;
       setTranscodeBusy(true);
       setTranscodeError(null);
       const prevSession = sessionIdRef.current;
+      const height =
+        heightOverride !== undefined ? heightOverride : videoHeight;
       try {
         if (prevSession) {
           await stopSession(prevSession);
         }
+        if (hlsRef.current) {
+          hlsRef.current.destroy();
+          hlsRef.current = null;
+        }
+        attachedPlaybackUrlRef.current = null;
         const res = await createTranscodeSession(
           state.hash,
           state.file_index,
           audioIndex,
           startSec,
           prevSession,
+          height,
         );
         sessionIdRef.current = res.session_id;
         setSelectedAudioIndex(res.selected_audio_index);
@@ -223,7 +261,7 @@ export default function PlayerPage() {
           prev
             ? {
                 ...prev,
-                playback_url: res.playback_url,
+                playback_url: absoluteMediaUrl(res.playback_url),
                 transcode_session_id: res.session_id,
                 playback_mode: res.playback_mode,
                 audio_tracks: res.audio_tracks,
@@ -233,9 +271,14 @@ export default function PlayerPage() {
               }
             : prev,
         );
-        attachHls(res.playback_url);
         setPlaybackStartSec(startSec);
         setTimelineSec(startSec);
+        const nextUrl = absoluteMediaUrl(res.playback_url);
+        attachHls(nextUrl, true);
+        const video = videoRef.current;
+        if (video) {
+          video.currentTime = 0;
+        }
       } catch (err) {
         setTranscodeError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -244,15 +287,16 @@ export default function PlayerPage() {
         seekGuardRef.current = false;
       }
     },
-    [attachHls, hlsMode, state, stopSession],
+    [attachHls, hlsMode, state, stopSession, videoHeight],
   );
 
   const seekToFilePosition = useCallback(
     (targetSec: number) => {
       if (!showFullTimeline) return;
       const clamped = Math.max(0, Math.min(fullDurationSec, targetSec));
-      setTimelineSec(clamped);
       seekGuardRef.current = true;
+      setPlaybackStartSec(clamped);
+      setTimelineSec(clamped);
       void replaceTranscodeSession(selectedAudioIndex, clamped);
     },
     [fullDurationSec, replaceTranscodeSession, selectedAudioIndex, showFullTimeline],
@@ -321,6 +365,15 @@ export default function PlayerPage() {
       }
     };
   }, [stopSession]);
+
+  useEffect(() => {
+    return () => {
+      if (!state?.hash || state.file_index == null) return;
+      const ids = [state.file_index];
+      if (activeSubId !== "off") ids.push(activeSubId);
+      void notifyPlaybackEnded(state.hash, ids).catch(() => {});
+    };
+  }, [state?.hash, state?.file_index, activeSubId]);
 
   useEffect(() => {
     if (!showFullTimeline) return;
@@ -424,6 +477,31 @@ export default function PlayerPage() {
       {transcodeError && <p className="error">{transcodeError}</p>}
 
       <div className="track-panel">
+        <label className="track-field">
+          Качество
+          <select
+            value={videoHeight ?? "auto"}
+            disabled={transcodeBusy}
+            onChange={(e) => {
+              const v = e.target.value;
+              const nextHeight = v === "auto" ? null : Number(v);
+              setVideoHeight(nextHeight);
+              seekGuardRef.current = true;
+              void replaceTranscodeSession(
+                selectedAudioIndex,
+                currentFilePositionSec(),
+                nextHeight,
+              );
+            }}
+          >
+            <option value="auto">Авто / оригинал</option>
+            {VIDEO_QUALITY_PRESETS.map((h) => (
+              <option key={h} value={h}>
+                {h}p
+              </option>
+            ))}
+          </select>
+        </label>
         {showApiAudio && (
           <label className="track-field">
             Озвучка
@@ -432,12 +510,9 @@ export default function PlayerPage() {
               disabled={transcodeBusy}
               onChange={(e) => {
                 const idx = Number(e.target.value);
-                const video = videoRef.current;
-                const filePos = showFullTimeline
-                  ? playbackStartSec + (video?.currentTime ?? 0)
-                  : (video?.currentTime ?? 0);
+                setSelectedAudioIndex(idx);
                 seekGuardRef.current = true;
-                void replaceTranscodeSession(idx, filePos);
+                void replaceTranscodeSession(idx, currentFilePositionSec());
               }}
             >
               {apiAudioTracks.map((t) => (

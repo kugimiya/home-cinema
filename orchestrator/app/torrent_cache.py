@@ -3,11 +3,29 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
-from app.clients.torrserver import TorrServerClient, _extract_files, info_hash_from_magnet
+from app.torrent_fetch import fetch_torrent_bytes
+from app.torrent_files import extract_files, info_hash_from_magnet
 
 Scope = Literal["list", "cache", "files"]
+
+
+class TorrentEngineClientProtocol(Protocol):
+    async def list_torrents(self) -> list[dict[str, Any]]: ...
+    async def get_torrent(self, info_hash: str) -> dict[str, Any]: ...
+    async def get_cache(self, info_hash: str) -> dict[str, Any]: ...
+    async def add_torrent(
+        self, link: str, title: str, save_to_db: bool = True
+    ) -> dict[str, Any]: ...
+    async def add_torrent_bytes(
+        self,
+        data: bytes,
+        title: str,
+        *,
+        magnet: str = "",
+        save_to_db: bool = True,
+    ) -> dict[str, Any]: ...
 
 
 @dataclass
@@ -26,13 +44,13 @@ class HashEntry:
     files_updated_at: float = 0.0
 
 
-class TorrStateCache:
+class TorrentStateCache:
     LIST_TTL_HOT = 3.0
     LIST_TTL_LIBRARY = 8.0
     CACHE_TTL_ACTIVE = 4.0
     CACHE_TTL_IDLE = 45.0
 
-    def __init__(self, client: TorrServerClient) -> None:
+    def __init__(self, client: TorrentEngineClientProtocol) -> None:
         self._client = client
         self._lock = asyncio.Lock()
         self._snapshot: ListSnapshot | None = None
@@ -116,7 +134,7 @@ class TorrStateCache:
             entry = self._entries.setdefault(h, HashEntry())
             entry.list_item = item
             entry.list_updated_at = now
-            raw = _extract_files(item)
+            raw = extract_files(item)
             if raw:
                 entry.files_raw = raw
                 entry.files_updated_at = now
@@ -134,16 +152,15 @@ class TorrStateCache:
         *,
         max_age_list: float | None = None,
     ) -> dict[str, Any]:
-        """Prefer cached list item; fall back to TorrServer get."""
         h = info_hash.lower()
         listed = await self.find_list_item(h, max_age=max_age_list or self.LIST_TTL_HOT)
-        if listed and _extract_files(listed):
+        if listed and extract_files(listed):
             return listed
 
         entry = self._entries.get(h)
         if entry and entry.files_raw:
             base = dict(listed) if listed else {}
-            if not _extract_files(base) and entry.list_item:
+            if not extract_files(base) and entry.list_item:
                 base = dict(entry.list_item)
             return base
 
@@ -153,13 +170,12 @@ class TorrStateCache:
             entry = self._entries.setdefault(h, HashEntry())
             entry.list_item = detail
             entry.list_updated_at = now
-            raw = _extract_files(detail)
+            raw = extract_files(detail)
             if raw:
                 entry.files_raw = raw
                 entry.files_updated_at = now
             return detail
-        if listed and not _extract_files(listed):
-            # TorrServer dropped the session (get → 404) while `list` still shows a stale row.
+        if listed and not extract_files(listed):
             self.invalidate_hash(h)
             self.invalidate_list()
             return {}
@@ -254,18 +270,59 @@ class TorrStateCache:
         return await self.find_list_item(info_hash, max_age=self.LIST_TTL_LIBRARY)
 
     async def ensure_torrent(
-        self, link: str, title: str, save_to_db: bool = True
+        self,
+        link: str,
+        title: str,
+        save_to_db: bool = True,
+        torrent_url: str | None = None,
     ) -> dict[str, Any]:
         info_hash = info_hash_from_magnet(link)
+        existing: dict[str, Any] = {}
         if info_hash:
             try:
                 existing = await self.ensure_torrent_lookup(info_hash)
             except Exception:
                 existing = {}
-            if existing:
+            if existing and extract_files(existing):
                 merged = dict(existing)
                 merged.setdefault("hash", info_hash)
                 return merged
+
+        async def _add_from_url() -> dict[str, Any] | None:
+            if not torrent_url:
+                return None
+            data = await fetch_torrent_bytes(
+                torrent_url,
+                timeout=min(45.0, self._client.request_timeout),
+            )
+            if not data:
+                return None
+            added = await self._client.add_torrent_bytes(
+                data,
+                title,
+                magnet=link,
+                save_to_db=save_to_db,
+            )
+            self.invalidate_list()
+            h = (added.get("hash") or info_hash or "").lower()
+            if h:
+                self.invalidate_hash(h, ["list", "cache", "files"])
+            if not added.get("hash") and info_hash:
+                added["hash"] = info_hash
+            return added
+
+        if existing and not extract_files(existing):
+            upgraded = await _add_from_url()
+            if upgraded:
+                return upgraded
+            merged = dict(existing)
+            merged.setdefault("hash", info_hash)
+            return merged
+
+        upgraded = await _add_from_url()
+        if upgraded:
+            return upgraded
+
         added = await self._client.add_torrent(link, title, save_to_db=save_to_db)
         self.invalidate_list()
         h = (added.get("hash") or info_hash or "").lower()

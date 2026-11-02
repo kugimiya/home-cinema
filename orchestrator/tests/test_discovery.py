@@ -23,9 +23,10 @@ def test_discover_rewrites_localhost_urls_for_lan_client() -> None:
         _request("192.168.1.5:8080"),
         version="0.1.0",
         orchestrator_public_url="http://localhost:3000",
-        torrserver_public_url="http://localhost:8090",
+        torrent_engine_public_url="http://localhost:8090",
     )
     assert payload.service == SERVICE_ID
     assert payload.api_base == "http://192.168.1.5:8080"
     assert payload.stream_proxy_base == "http://192.168.1.5:3000"
-    assert payload.torrserver_base == "http://192.168.1.5:8090"
+    assert payload.torrent_engine_base == "http://192.168.1.5:8090"
+    assert payload.stream_base == "http://192.168.1.5:8090"

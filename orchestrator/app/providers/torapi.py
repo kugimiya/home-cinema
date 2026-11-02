@@ -119,6 +119,8 @@ def _item_to_release(provider: Provider, item: dict[str, Any]) -> Optional[Relea
         seeds=str(item.get("Seeds")) if item.get("Seeds") is not None else None,
         peers=str(item.get("Peers")) if item.get("Peers") is not None else None,
         url=item.get("Url"),
+        magnet=item.get("Magnet"),
+        torrent_url=item.get("Torrent"),
     )
 
 
@@ -139,5 +141,6 @@ def _detail_from_torapi(
         magnet=magnet,
         hash=hash_val,
         url=data.get("Url"),
+        torrent_url=data.get("Torrent"),
         description=data.get("Description"),
     )

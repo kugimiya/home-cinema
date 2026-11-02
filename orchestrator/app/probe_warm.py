@@ -10,7 +10,7 @@ from typing import Any, Callable, Literal, Optional
 import httpx
 
 from app.activity_tracker import ActivityTracker
-from app.clients.torrserver import TorrServerClient
+from app.clients.torrent_engine import TorrentEngineClient
 from app.file_progress import progress_from_cache
 from app.media_files import media_kind_for_path
 from app.probe_head import ensure_head_file
@@ -149,7 +149,7 @@ def warm_summary_for_hash(
 class ProbeWarmManager:
     def __init__(
         self,
-        torr: TorrServerClient,
+        torrent_engine: TorrentEngineClient,
         activity: ActivityTracker,
         *,
         warm_bytes: int,
@@ -160,7 +160,7 @@ class ProbeWarmManager:
         warm_target_fn: Callable[[str, int, str, int], int] | None = None,
         head_dir: Path | None = None,
     ) -> None:
-        self._torr = torr
+        self._torrent_engineent_engine = torrent_engine
         self._activity = activity
         self.warm_bytes = max(0, warm_bytes)
         self._warm_target_fn = warm_target_fn
@@ -476,7 +476,7 @@ class ProbeWarmManager:
             async with self._activity.track("warm_probe", detail):
                 if self._head_dir is not None:
                     _path, warmed = await ensure_head_file(
-                        self._torr,
+                        self._torrent_engine,
                         self._head_dir,
                         h,
                         item.path,
@@ -512,7 +512,7 @@ class ProbeWarmManager:
         file_index: int,
         target: int,
     ) -> int:
-        url = self._torr.build_internal_stream_url(info_hash, path, file_index)
+        url = self._torrent_engine.build_internal_stream_url(info_hash, path, file_index)
         end = max(0, target - 1)
         headers = {"Range": f"bytes=0-{end}"}
         timeout = httpx.Timeout(120.0, connect=15.0)

@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalMaterial3Api::class)
+
 package com.homecinema.app.ui.screens
 
 import android.app.Activity
@@ -10,7 +12,6 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,10 +21,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.Icon
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
@@ -33,6 +34,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -69,6 +71,7 @@ import com.homecinema.app.R
 import com.homecinema.app.data.ServerEndpoints
 import com.homecinema.app.data.api.AudioTrackInfo
 import com.homecinema.app.data.api.HomeCinemaApi
+import com.homecinema.app.data.api.PlaybackEndedBody
 import com.homecinema.app.data.api.PlaySelectBody
 import com.homecinema.app.data.api.PlaySelectStatus
 import com.homecinema.app.data.api.PlayerState
@@ -83,7 +86,9 @@ import com.homecinema.app.ui.theme.HomeError
 import com.homecinema.app.ui.theme.HomeMuted
 import com.homecinema.app.ui.theme.HomeTextPrimary
 import com.homecinema.app.ui.theme.homeTextFieldColors
+import com.homecinema.app.BuildConfig
 import com.homecinema.app.HomeCinemaApp
+import android.util.Log
 import com.homecinema.app.ui.components.LoadingOverlay
 import com.homecinema.app.ui.util.isTelevision
 import com.homecinema.app.ui.util.resolveFileDurationSec
@@ -128,6 +133,8 @@ fun PlayerScreen(
     var scrubbing by remember { mutableStateOf(false) }
     var transcodeBusy by remember { mutableStateOf(false) }
     var transcodeError by remember { mutableStateOf<String?>(null) }
+    var videoHeight by remember { mutableStateOf<Int?>(null) }
+    val qualityOptions = listOf(null to "Авто", 240 to "240p", 320 to "320p", 480 to "480p", 720 to "720p", 1080 to "1080p", 1440 to "1440p")
     val context = LocalContext.current
     val view = LocalView.current
     val isTv = remember(context) { context.isTelevision() }
@@ -157,7 +164,7 @@ fun PlayerScreen(
         preparing = true
         error = null
         try {
-            val res = api.selectPlayFile(PlaySelectBody(hash, fileIndex))
+            val res = api.selectPlayFile(PlaySelectBody(hash, fileIndex, videoHeight = videoHeight))
             val state = res.toPlayerState(endpoints)
             playerState = state
             selectedAudio = state.selectedAudioIndex
@@ -204,6 +211,17 @@ fun PlayerScreen(
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
             }
+
+            override fun onPlayerError(playbackException: androidx.media3.common.PlaybackException) {
+                if (BuildConfig.DEBUG) {
+                    Log.e(
+                        "HomeCinemaPlayer",
+                        "ExoPlayer error: ${playbackException.errorCodeName} ${playbackException.message}",
+                        playbackException,
+                    )
+                }
+                error = userFacingError(playbackException)
+            }
         }
         exo.addListener(listener)
         onDispose { exo.removeListener(listener) }
@@ -221,16 +239,31 @@ fun PlayerScreen(
     }
 
     var attachedMediaKey by remember { mutableStateOf<String?>(null) }
+    var switchingSession by remember { mutableStateOf(false) }
 
-    fun attachMedia(uri: String, hls: Boolean) {
+    fun currentFilePositionSec(): Double =
+        if (showFullTimeline) {
+            playbackStartSec + exo.currentPosition / 1000.0
+        } else {
+            exo.currentPosition / 1000.0
+        }
+
+    fun attachMedia(uri: String, hls: Boolean, force: Boolean = false) {
         val key = "$uri|$hls"
-        if (key == attachedMediaKey && exo.playbackState != Player.STATE_IDLE) {
+        if (!force && key == attachedMediaKey && exo.playbackState != Player.STATE_IDLE) {
             if (!exo.playWhenReady) {
                 exo.playWhenReady = true
             }
             return
         }
+        if (force) {
+            attachedMediaKey = null
+            exo.stop()
+        }
         attachedMediaKey = key
+        if (BuildConfig.DEBUG) {
+            Log.i("HomeCinemaPlayer", "attachMedia hls=$hls uri=$uri force=$force")
+        }
         val item = MediaItem.Builder()
             .setUri(uri)
             .apply {
@@ -239,14 +272,26 @@ fun PlayerScreen(
             .build()
         exo.setMediaItem(item)
         exo.prepare()
+        if (force && hls) {
+            exo.seekTo(0)
+        }
         exo.playWhenReady = true
     }
 
-    suspend fun replaceTranscodeSession(audioIndex: Int, startSec: Double) {
-        if (state == null || !hlsMode) return
+    suspend fun replaceTranscodeSession(
+        audioIndex: Int,
+        startSec: Double,
+        heightOverride: Int? = null,
+    ) {
+        if (state == null || !hlsMode || switchingSession) return
+        switchingSession = true
         transcodeBusy = true
         transcodeError = null
         val prevSession = state.transcodeSessionId
+        val height = heightOverride ?: videoHeight
+        if (heightOverride != null) {
+            videoHeight = heightOverride
+        }
         try {
             if (prevSession != null) {
                 runCatching { api.deleteTranscodeSession(prevSession) }
@@ -257,10 +302,12 @@ fun PlayerScreen(
                     fileIndex = fileIndex,
                     audioIndex = audioIndex,
                     startSec = startSec,
+                    videoHeight = height,
                     replaceSessionId = prevSession,
                 ),
             )
-            val url = endpoints.rewriteMediaUrl(res.playbackUrl)
+            val url = endpoints.absoluteMediaUrl(res.playbackUrl)
+                ?: throw IllegalStateException("Нет URL перекодированного потока")
             selectedAudio = res.selectedAudioIndex
             val lengthBytes = res.fileLength ?: state.fileLengthBytes
             val resolvedDur = resolveFileDurationSec(
@@ -278,24 +325,35 @@ fun PlayerScreen(
             )
             playbackStartSec = startSec
             timelineSec = startSec
-            attachMedia(url, hls = true)
+            attachMedia(url, hls = true, force = true)
+            exo.seekTo(0)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
             transcodeError = userFacingError(e)
         } finally {
             transcodeBusy = false
+            switchingSession = false
         }
     }
 
     DisposableEffect(Unit) {
         val appScope = (context.applicationContext as HomeCinemaApp).applicationScope
         onDispose {
-            val sid = playerState?.transcodeSessionId
+            val ps = playerState
+            val sid = ps?.transcodeSessionId
             exo.release()
-            if (sid != null) {
-                appScope.launch(Dispatchers.IO) {
+            appScope.launch(Dispatchers.IO) {
+                if (sid != null) {
                     runCatching { api.deleteTranscodeSession(sid) }
+                }
+                if (ps != null) {
+                    runCatching {
+                        api.playbackEnded(
+                            hash,
+                            PlaybackEndedBody(fileIds = listOf(fileIndex)),
+                        )
+                    }
                 }
             }
         }
@@ -473,6 +531,7 @@ fun PlayerScreen(
                             timelineSec = timelineSec,
                             fullDurationSec = fullDurationSec,
                             transcodeBusy = transcodeBusy,
+                            scrubbing = scrubbing,
                             onScrubStart = { onFullTimelineScrubStart() },
                             onScrub = { timelineSec = it },
                             onScrubEnd = { target ->
@@ -535,6 +594,7 @@ fun PlayerScreen(
                         timelineSec = timelineSec,
                         fullDurationSec = fullDurationSec,
                         transcodeBusy = transcodeBusy,
+                        scrubbing = scrubbing,
                         onScrubStart = { onFullTimelineScrubStart() },
                         onScrub = { timelineSec = it },
                         onScrubEnd = { target ->
@@ -583,6 +643,7 @@ fun PlayerScreen(
                         timelineSec = timelineSec,
                         fullDurationSec = fullDurationSec,
                         transcodeBusy = transcodeBusy,
+                        scrubbing = scrubbing,
                         onScrubStart = { onFullTimelineScrubStart() },
                         onScrub = { timelineSec = it },
                         onScrubEnd = { target ->
@@ -600,6 +661,55 @@ fun PlayerScreen(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
                     )
                 }
+                var qualityExpanded by remember { mutableStateOf(false) }
+                ExposedDropdownMenuBox(
+                    expanded = qualityExpanded,
+                    onExpandedChange = { expanded ->
+                        if (!transcodeBusy) qualityExpanded = expanded
+                    },
+                    modifier = Modifier
+                        .padding(horizontal = 12.dp, vertical = 4.dp)
+                        .fillMaxWidth(),
+                ) {
+                    OutlinedTextField(
+                        readOnly = true,
+                        enabled = !transcodeBusy,
+                        value = qualityOptions.firstOrNull { it.first == videoHeight }?.second ?: "Авто",
+                        onValueChange = {},
+                        label = { Text("Качество") },
+                        trailingIcon = {
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = qualityExpanded)
+                        },
+                        colors = homeTextFieldColors(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor(),
+                    )
+                    ExposedDropdownMenu(
+                        expanded = qualityExpanded,
+                        onDismissRequest = { qualityExpanded = false },
+                    ) {
+                        qualityOptions.forEach { (h, label) ->
+                            DropdownMenuItem(
+                                text = { Text(label) },
+                                onClick = {
+                                    qualityExpanded = false
+                                    if (h == videoHeight) return@DropdownMenuItem
+                                    videoHeight = h
+                                    if (hlsMode) {
+                                        scope.launch {
+                                            replaceTranscodeSession(
+                                                selectedAudio,
+                                                currentFilePositionSec(),
+                                                heightOverride = h,
+                                            )
+                                        }
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
                 val tracks = state.audioTracks
                 if (tracks.size > 1 && hlsMode) {
                     AudioTrackDropdown(
@@ -607,13 +717,8 @@ fun PlayerScreen(
                         selectedIndex = selectedAudio,
                         enabled = !transcodeBusy,
                         onSelect = { idx ->
-                            val pos = if (showFullTimeline) {
-                                playbackStartSec + exo.currentPosition / 1000.0
-                            } else {
-                                exo.currentPosition / 1000.0
-                            }
                             scope.launch {
-                                replaceTranscodeSession(idx, pos)
+                                replaceTranscodeSession(idx, currentFilePositionSec())
                             }
                         },
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
@@ -663,7 +768,11 @@ private fun AudioTrackDropdown(
     val selectedLabel = tracks.firstOrNull { it.index == selectedIndex }?.label
         ?: tracks.firstOrNull()?.label.orEmpty()
 
-    Box(modifier = modifier.fillMaxWidth()) {
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { next -> if (enabled) expanded = next },
+        modifier = modifier.fillMaxWidth(),
+    ) {
         OutlinedTextField(
             value = selectedLabel,
             onValueChange = {},
@@ -671,17 +780,14 @@ private fun AudioTrackDropdown(
             enabled = enabled,
             label = { Text("Озвучка") },
             trailingIcon = {
-                Icon(
-                    Icons.Filled.ArrowDropDown,
-                    contentDescription = null,
-                )
+                ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
             },
             colors = homeTextFieldColors(),
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(enabled = enabled) { expanded = true },
+                .menuAnchor(),
         )
-        DropdownMenu(
+        ExposedDropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
         ) {
@@ -716,7 +822,11 @@ private fun TimelinePositionEffect(
     LaunchedEffect(enabled, exo) {
         if (!enabled) return@LaunchedEffect
         while (isActive) {
-            if (!scrubbingState.value && !transcodeBusyState.value) {
+            if (
+                !scrubbingState.value &&
+                !transcodeBusyState.value &&
+                exo.playbackState == Player.STATE_READY
+            ) {
                 onPositionSec(startSecState.value + exo.currentPosition / 1000.0)
             }
             delay(400)
@@ -729,11 +839,20 @@ private fun FullFileTimeline(
     timelineSec: Double,
     fullDurationSec: Double,
     transcodeBusy: Boolean,
+    scrubbing: Boolean,
     onScrubStart: () -> Unit,
     onScrub: (Double) -> Unit,
     onScrubEnd: (Double) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var sliderValue by remember(fullDurationSec) {
+        mutableFloatStateOf(timelineSec.toFloat().coerceIn(0f, fullDurationSec.toFloat()))
+    }
+    LaunchedEffect(timelineSec, transcodeBusy, scrubbing) {
+        if (!transcodeBusy && !scrubbing) {
+            sliderValue = timelineSec.toFloat().coerceIn(0f, fullDurationSec.toFloat())
+        }
+    }
     Row(
         modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -745,13 +864,15 @@ private fun FullFileTimeline(
             color = HomeTextPrimary,
         )
         Slider(
-            value = timelineSec.toFloat().coerceIn(0f, fullDurationSec.toFloat()),
-            onValueChange = {
+            value = sliderValue.coerceIn(0f, fullDurationSec.toFloat()),
+            onValueChange = { v ->
+                sliderValue = v
                 onScrubStart()
-                onScrub(it.toDouble())
+                onScrub(v.toDouble())
             },
             onValueChangeFinished = {
-                onScrubEnd(timelineSec.coerceIn(0.0, fullDurationSec))
+                val target = sliderValue.toDouble().coerceIn(0.0, fullDurationSec)
+                onScrubEnd(target)
             },
             valueRange = 0f..fullDurationSec.toFloat(),
             enabled = !transcodeBusy,

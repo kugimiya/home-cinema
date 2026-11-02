@@ -1,0 +1,14 @@
+# Integration test runner (requires Docker).
+# Usage: docker compose -f docker-compose.yml -f compose.test.yml run --rm test-runner
+
+services:
+  test-runner:
+    image: python:3.12-slim-bookworm
+    working_dir: /work
+    volumes:
+      - .:/work
+    command: >
+      bash -c "
+        pip install -q ./orchestrator ./torrent-engine ./transcoder '[dev]' &&
+        pytest orchestrator/tests torrent-engine/tests transcoder/tests -q --ignore=torrent-engine/tests/integration
+      "

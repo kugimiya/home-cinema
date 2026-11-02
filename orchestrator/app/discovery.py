@@ -23,7 +23,8 @@ class DiscoverPayload:
     version: str
     api_base: str
     stream_proxy_base: str
-    torrserver_base: str
+    torrent_engine_base: str
+    stream_base: str
 
     def as_dict(self) -> dict[str, str]:
         return {
@@ -31,7 +32,8 @@ class DiscoverPayload:
             "version": self.version,
             "api_base": self.api_base,
             "stream_proxy_base": self.stream_proxy_base,
-            "torrserver_base": self.torrserver_base,
+            "torrent_engine_base": self.torrent_engine_base,
+            "stream_base": self.stream_base,
         }
 
 
@@ -54,10 +56,10 @@ def build_discover_payload(
     *,
     version: str,
     orchestrator_public_url: str,
-    torrserver_public_url: str,
+    torrent_engine_public_url: str,
     default_api_port: int = 8080,
     default_web_port: int = 3000,
-    default_torr_port: int = 8090,
+    default_engine_port: int = 8090,
 ) -> DiscoverPayload:
     host = _lan_host_from_request(request)
     scheme = request.url.scheme or "http"
@@ -74,14 +76,16 @@ def build_discover_payload(
         return default_url.rstrip("/")
 
     stream_proxy_base = _rewrite_public(orchestrator_public_url, default_web_port)
-    torrserver_base = _rewrite_public(torrserver_public_url, default_torr_port)
+    engine_base = _rewrite_public(torrent_engine_public_url, default_engine_port)
 
+    stream_base = engine_base.rstrip("/")
     return DiscoverPayload(
         service=SERVICE_ID,
         version=version,
         api_base=api_base.rstrip("/"),
         stream_proxy_base=stream_proxy_base.rstrip("/"),
-        torrserver_base=torrserver_base.rstrip("/"),
+        torrent_engine_base=stream_base,
+        stream_base=stream_base,
     )
 
 
