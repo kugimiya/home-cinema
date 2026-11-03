@@ -23,6 +23,11 @@ async function main(): Promise<void> {
 
   const shutdown = async () => {
     clearInterval(tick);
+    try {
+      await getManager().flushPersistence();
+    } catch (e) {
+      logger.warn(`flush_persistence failed: ${e}`);
+    }
     await app.close();
   };
   process.on("SIGINT", () => void shutdown());

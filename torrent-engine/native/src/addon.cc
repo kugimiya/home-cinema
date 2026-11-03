@@ -171,6 +171,11 @@ Napi::Value TickModes(const Napi::CallbackInfo& info) {
   return info.Env().Undefined();
 }
 
+Napi::Value FlushPersistence(const Napi::CallbackInfo& info) {
+  session().flushPersistence();
+  return info.Env().Undefined();
+}
+
 Napi::Value ReadFileRange(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   auto deferred = Napi::Promise::Deferred::New(env);
@@ -198,6 +203,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("setMode", Napi::Function::New(env, SetMode));
   exports.Set("heartbeat", Napi::Function::New(env, Heartbeat));
   exports.Set("tickModes", Napi::Function::New(env, TickModes));
+  exports.Set("flushPersistence", Napi::Function::New(env, FlushPersistence));
   exports.Set("readFileRange", Napi::Function::New(env, ReadFileRange));
   return exports;
 }

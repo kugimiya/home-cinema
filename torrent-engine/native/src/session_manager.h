@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <nlohmann/json.hpp>
 #include <set>
 #include <string>
@@ -42,6 +43,7 @@ class TorrentSessionManager {
   void setMode(const std::string& infoHash, TorrentMode mode);
   void heartbeat(const std::string& infoHash, const std::vector<int>& fileIds, bool streamActive);
   void tickModes();
+  void flushPersistence();
   std::vector<std::uint8_t> readFileRange(const std::string& infoHash, int fileIndex, int start,
                                           int end, double timeoutSec);
 
@@ -59,17 +61,27 @@ class TorrentSessionManager {
   int unchokeSlotsLimit_ = 20;
   nlohmann::json sessionSettingsSnapshot_;
   nlohmann::json clientIdentity_;
+  double lastDhtPersistAt_ = 0;
 
   void collectAlerts();
   void restorePersisted();
+  std::string dhtStateFilePath() const;
+  void saveDhtState();
+  void maybeSaveDhtState();
   libtorrent::torrent_handle* handleFor(const std::string& infoHash);
   std::string torrentFilePath(const std::string& infoHash) const;
   void saveTorrentFile(const std::string& infoHash, const std::vector<std::uint8_t>& data);
-  libtorrent::add_torrent_params paramsFromBytes(const std::vector<std::uint8_t>& data);
+  std::string resumeFilePath(const std::string& infoHash) const;
+  std::optional<std::vector<std::uint8_t>> loadResumeFile(const std::string& infoHash) const;
+  void saveResumeFile(const std::string& infoHash, const std::vector<std::uint8_t>& data);
+  void removeEngineArtifacts(const std::string& infoHash);
+  void persistTorrentSnapshotUnlocked(const std::string& infoHash);
+  libtorrent::add_torrent_params paramsFromBytes(const std::vector<std::uint8_t>& data,
+                                                 bool trustExistingOnDisk);
   void applyTorrentConnectionLimits(libtorrent::torrent_handle& handle);
   void dropHandle(const std::string& infoHash);
   std::string addLinkUnlocked(const std::string& link, const std::string& title,
-                              const std::string& infoHashHint = "");
+                              const std::string& infoHashHint = "", bool trustExistingOnDisk = false);
   libtorrent::file_storage fileStorage(libtorrent::torrent_handle& handle);
   void applyPrioritiesUnlocked(const std::string& infoHash);
   void prioritizeByteRange(libtorrent::torrent_handle& handle, int fileIndex, int start, int end);

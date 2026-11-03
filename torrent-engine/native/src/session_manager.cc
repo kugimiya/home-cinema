@@ -4,9 +4,12 @@
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/load_torrent.hpp>
 #include <libtorrent/magnet_uri.hpp>
+#include <libtorrent/bencode.hpp>
 #include <libtorrent/read_resume_data.hpp>
+#include <libtorrent/write_resume_data.hpp>
 #include <libtorrent/span.hpp>
 #include <libtorrent/torrent_info.hpp>
+#include <libtorrent/session_params.hpp>
 #include <libtorrent/torrent_status.hpp>
 
 #include <chrono>
@@ -27,18 +30,25 @@ namespace hc {
 namespace {
 
 constexpr int kMaxPieceScan = 8000;
+constexpr double kDhtPersistIntervalSec = 60.0;
+constexpr char kDhtStateFileName[] = "dht_state.benc";
 
 void configureAlertMask(lt::session& ses) {
   ses.set_alert_mask(lt::alert::all_categories);
 }
 
-void applyAddTorrentFlags(lt::add_torrent_params& params) {
+void applyAddTorrentFlags(lt::add_torrent_params& params, bool trustExistingOnDisk) {
   params.flags |= lt::torrent_flags::sequential_download;
-  params.flags |= lt::torrent_flags::no_verify_files;
+  if (trustExistingOnDisk) {
+    params.flags |= lt::torrent_flags::no_verify_files;
+  } else {
+    params.flags &= ~lt::torrent_flags::no_verify_files;
+  }
 }
 
-void enableSequentialDownload(lt::add_torrent_params* params, lt::torrent_handle* handle) {
-  if (params) applyAddTorrentFlags(*params);
+void enableSequentialDownload(lt::add_torrent_params* params, lt::torrent_handle* handle,
+                              bool trustExistingOnDisk) {
+  if (params) applyAddTorrentFlags(*params, trustExistingOnDisk);
   if (handle && handle->is_valid()) {
     handle->set_sequential_download(true);
   }
@@ -66,6 +76,27 @@ json jsonFieldOrNull(const json& obj, const char* key) {
   return nullptr;
 }
 
+std::vector<std::uint8_t> readBinaryFile(const fs::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::vector<std::uint8_t>((std::istreambuf_iterator<char>(in)), {});
+}
+
+lt::session_params buildSessionParams(const std::string& savePath, lt::settings_pack pack) {
+  lt::session_params sp(std::move(pack));
+  fs::path path = fs::path(savePath) / ".engine" / kDhtStateFileName;
+  if (!fs::is_regular_file(path)) return sp;
+  try {
+    std::vector<std::uint8_t> data = readBinaryFile(path);
+    if (data.empty()) return sp;
+    lt::span<const char> buf(reinterpret_cast<const char*>(data.data()), data.size());
+    lt::session_params cached =
+        lt::read_session_params(buf, lt::session_handle::save_dht_state);
+    sp.dht_state = std::move(cached.dht_state);
+  } catch (...) {
+  }
+  return sp;
+}
+
 }  // namespace
 
 std::string TorrentSessionManager::lower(std::string s) {
@@ -86,7 +117,7 @@ TorrentSessionManager::TorrentSessionManager(std::string savePath, SessionConfig
       config_(std::move(config)),
       index_(savePath_),
       alertRing_(400),
-      session_(config_.pack) {
+      session_(buildSessionParams(savePath_, std::move(config_.pack))) {
   fs::create_directories(savePath_);
   configureAlertMask(session_);
 
@@ -133,7 +164,16 @@ void TorrentSessionManager::collectAlerts() {
   if (alerts.empty()) return;
   std::vector<json> batch;
   batch.reserve(alerts.size());
-  for (auto* a : alerts) batch.push_back(serializeAlert(a));
+  for (auto* a : alerts) {
+    batch.push_back(serializeAlert(a));
+    if (auto* md = lt::alert_cast<lt::metadata_received_alert>(a)) {
+      if (md->handle.is_valid()) {
+        std::string h = lower(hashToHex(md->handle.info_hashes().get_best()));
+        std::lock_guard<std::mutex> guard(lock_);
+        if (handles_.count(h)) persistTorrentSnapshotUnlocked(h);
+      }
+    }
+  }
   alertRing_.extend(std::move(batch));
 }
 
@@ -176,6 +216,7 @@ json TorrentSessionManager::sessionStatus() {
     dht = config_.libtorrentSnapshot["dht_bootstrap_nodes"].get<std::string>();
   }
   out["dht_bootstrap_nodes"] = dht.empty() ? json(nullptr) : json(dht);
+  out["dht_state_cached"] = fs::is_regular_file(fs::path(savePath_) / ".engine" / kDhtStateFileName);
   out["collected_at"] = now;
   return out;
 }
@@ -199,11 +240,76 @@ void TorrentSessionManager::saveTorrentFile(const std::string& infoHash,
             static_cast<std::streamsize>(data.size()));
 }
 
-lt::add_torrent_params TorrentSessionManager::paramsFromBytes(const std::vector<std::uint8_t>& data) {
+std::string TorrentSessionManager::resumeFilePath(const std::string& infoHash) const {
+  return (fs::path(savePath_) / ".engine" / "resume" / (lower(infoHash) + ".resume")).string();
+}
+
+std::optional<std::vector<std::uint8_t>> TorrentSessionManager::loadResumeFile(
+    const std::string& infoHash) const {
+  fs::path path = resumeFilePath(infoHash);
+  if (!fs::is_regular_file(path)) return std::nullopt;
+  try {
+    return readBinaryFile(path);
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
+void TorrentSessionManager::saveResumeFile(const std::string& infoHash,
+                                           const std::vector<std::uint8_t>& data) {
+  fs::path path = resumeFilePath(infoHash);
+  fs::create_directories(path.parent_path());
+  std::ofstream out(path, std::ios::binary);
+  out.write(reinterpret_cast<const char*>(data.data()),
+            static_cast<std::streamsize>(data.size()));
+}
+
+void TorrentSessionManager::removeEngineArtifacts(const std::string& infoHash) {
+  std::error_code ec;
+  fs::remove(resumeFilePath(infoHash), ec);
+  fs::remove(torrentFilePath(infoHash), ec);
+}
+
+void TorrentSessionManager::persistTorrentSnapshotUnlocked(const std::string& infoHash) {
+  lt::torrent_handle* handle = handleFor(infoHash);
+  if (!handle || !handle->is_valid()) return;
+  lt::torrent_status status = handle->status();
+  if (!status.has_metadata) return;
+
+  try {
+    lt::entry rd = handle->write_resume_data();
+    std::vector<char> resumeBuf;
+    lt::bencode(std::back_inserter(resumeBuf), rd);
+    if (!resumeBuf.empty()) {
+      saveResumeFile(infoHash, std::vector<std::uint8_t>(resumeBuf.begin(), resumeBuf.end()));
+    }
+
+    lt::error_code ec;
+    lt::span<const char> resumeSpan(resumeBuf.data(), resumeBuf.size());
+    lt::add_torrent_params atp = lt::read_resume_data(resumeSpan, ec);
+    if (!ec) {
+      std::vector<char> torrentBuf =
+          lt::write_torrent_file_buf(atp, lt::write_torrent_flags_t{});
+      if (!torrentBuf.empty()) {
+        saveTorrentFile(infoHash, std::vector<std::uint8_t>(torrentBuf.begin(), torrentBuf.end()));
+        TorrentState* st = nullptr;
+        auto it = states_.find(lower(infoHash));
+        if (it != states_.end()) st = &it->second;
+        std::string title = st && !st->title.empty() ? st->title : lower(infoHash);
+        index_.remember(infoHash, torrentFilePath(infoHash), title);
+        if (st) st->link = torrentFilePath(infoHash);
+      }
+    }
+  } catch (...) {
+  }
+}
+
+lt::add_torrent_params TorrentSessionManager::paramsFromBytes(const std::vector<std::uint8_t>& data,
+                                                              bool trustExistingOnDisk) {
   lt::span<const char> buf(reinterpret_cast<const char*>(data.data()), data.size());
   lt::add_torrent_params params = lt::load_torrent_buffer(buf);
   params.save_path = savePath_;
-  applyAddTorrentFlags(params);
+  applyAddTorrentFlags(params, trustExistingOnDisk);
   return params;
 }
 
@@ -224,7 +330,8 @@ void TorrentSessionManager::dropHandle(const std::string& infoHash) {
 }
 
 std::string TorrentSessionManager::addLinkUnlocked(const std::string& link, const std::string& title,
-                                                   const std::string& infoHashHint) {
+                                                   const std::string& infoHashHint,
+                                                   bool trustExistingOnDisk) {
   std::string stripped = link;
   while (!stripped.empty() && (stripped.back() == ' ' || stripped.back() == '\t')) stripped.pop_back();
   size_t start = stripped.find_first_not_of(" \t");
@@ -239,14 +346,13 @@ std::string TorrentSessionManager::addLinkUnlocked(const std::string& link, cons
     if (!fs::is_regular_file(stripped)) {
       throw std::runtime_error("Torrent file not found: " + stripped);
     }
-    std::ifstream in(stripped, std::ios::binary);
-    std::vector<std::uint8_t> buf((std::istreambuf_iterator<char>(in)), {});
-    params = paramsFromBytes(buf);
+    std::vector<std::uint8_t> buf = readBinaryFile(stripped);
+    params = paramsFromBytes(buf, trustExistingOnDisk);
   }
   params.save_path = savePath_;
-  applyAddTorrentFlags(params);
+  applyAddTorrentFlags(params, trustExistingOnDisk);
   lt::torrent_handle handle = session_.add_torrent(params);
-  enableSequentialDownload(nullptr, &handle);
+  enableSequentialDownload(nullptr, &handle, trustExistingOnDisk);
   applyTorrentConnectionLimits(handle);
 
   std::string ih = infoHashHint;
@@ -265,28 +371,90 @@ void TorrentSessionManager::restorePersisted() {
   for (const auto& [infoHash, link, title] : index_.allEntries()) {
     if (link.empty()) continue;
     try {
-      std::string restoreLink = link;
-      if (fs::is_regular_file(torrentFilePath(infoHash))) restoreLink = torrentFilePath(infoHash);
-      addLinkUnlocked(restoreLink, title, infoHash);
-      auto& st = states_[lower(infoHash)];
-      st.title = title;
-      st.link = link;
-      st.mode = TorrentMode::completing;
-      if (auto* h = handleFor(infoHash)) {
-        if (h->status().is_seeding) st.mode = TorrentMode::seeding;
+      std::string h = lower(infoHash);
+      if (handles_.count(h)) continue;
+
+      if (auto resume = loadResumeFile(h)) {
+        lt::error_code ec;
+        lt::span<const char> buf(reinterpret_cast<const char*>(resume->data()), resume->size());
+        lt::add_torrent_params params = lt::read_resume_data(buf, ec);
+        if (ec) throw std::runtime_error(ec.message());
+        params.save_path = savePath_;
+        applyAddTorrentFlags(params, true);
+        lt::torrent_handle handle = session_.add_torrent(params);
+        enableSequentialDownload(nullptr, &handle, true);
+        applyTorrentConnectionLimits(handle);
+        handles_[h] = handle;
+        states_[h] = TorrentState{title, link, TorrentMode::completing, {}, nowSec()};
+        if (handle.status().is_seeding) states_[h].mode = TorrentMode::seeding;
+        if (fs::is_regular_file(torrentFilePath(h))) {
+          states_[h].link = torrentFilePath(h);
+        }
+        applyPrioritiesUnlocked(h);
+        continue;
       }
-      applyPrioritiesUnlocked(lower(infoHash));
+
+      std::string restoreLink = link;
+      if (fs::is_regular_file(torrentFilePath(h))) restoreLink = torrentFilePath(h);
+      addLinkUnlocked(restoreLink, title, infoHash, false);
+      auto& st = states_[h];
+      st.title = title;
+      if (fs::is_regular_file(torrentFilePath(h))) {
+        st.link = torrentFilePath(h);
+      } else {
+        st.link = link;
+      }
+      st.mode = TorrentMode::completing;
+      if (auto* handle = handleFor(h)) {
+        if (handle->status().is_seeding) st.mode = TorrentMode::seeding;
+      }
+      applyPrioritiesUnlocked(h);
     } catch (...) {
       /* skip failed restore */
     }
   }
 }
 
+void TorrentSessionManager::flushPersistence() {
+  {
+    std::lock_guard<std::mutex> guard(lock_);
+    for (const auto& [h, handle] : handles_) {
+      if (handle.is_valid()) persistTorrentSnapshotUnlocked(h);
+    }
+  }
+  saveDhtState();
+}
+
+std::string TorrentSessionManager::dhtStateFilePath() const {
+  return (fs::path(savePath_) / ".engine" / kDhtStateFileName).string();
+}
+
+void TorrentSessionManager::saveDhtState() {
+  if (!config_.libtorrentSnapshot.value("enable_dht", true)) return;
+  try {
+    lt::session_params state = session_.session_state(lt::session_handle::save_dht_state);
+    std::vector<char> buf =
+        lt::write_session_params_buf(state, lt::session_handle::save_dht_state);
+    if (buf.empty()) return;
+    fs::path path = dhtStateFilePath();
+    fs::create_directories(path.parent_path());
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(buf.data(), static_cast<std::streamsize>(buf.size()));
+    lastDhtPersistAt_ = nowSec();
+  } catch (...) {
+  }
+}
+
+void TorrentSessionManager::maybeSaveDhtState() {
+  if (nowSec() - lastDhtPersistAt_ < kDhtPersistIntervalSec) return;
+  saveDhtState();
+}
+
 json TorrentSessionManager::addTorrentBytes(const std::vector<std::uint8_t>& data,
                                             const std::string& title, const std::string& magnet,
                                             bool saveToDb) {
   std::lock_guard<std::mutex> guard(lock_);
-  lt::add_torrent_params params = paramsFromBytes(data);
+  lt::add_torrent_params params = paramsFromBytes(data, true);
   std::string h = lower(hashToHex(params.info_hashes.get_best()));
 
   if (auto* existing = handleFor(h)) {
@@ -296,9 +464,9 @@ json TorrentSessionManager::addTorrentBytes(const std::vector<std::uint8_t>& dat
     dropHandle(h);
   }
 
-  enableSequentialDownload(&params, nullptr);
+  enableSequentialDownload(&params, nullptr, true);
   lt::torrent_handle handle = session_.add_torrent(params);
-  enableSequentialDownload(nullptr, &handle);
+  enableSequentialDownload(nullptr, &handle, true);
   applyTorrentConnectionLimits(handle);
   handles_[h] = handle;
   saveTorrentFile(h, data);
@@ -319,7 +487,7 @@ json TorrentSessionManager::addTorrent(const std::string& link, const std::strin
       }
     }
   }
-  std::string h = addLinkUnlocked(link, title);
+  std::string h = addLinkUnlocked(link, title, "", true);
   if (saveToDb) index_.remember(h, link, title);
   return detailUnlocked(h, states_[h]);
 }
@@ -333,7 +501,7 @@ lt::file_storage TorrentSessionManager::fileStorage(lt::torrent_handle& handle) 
 void TorrentSessionManager::applyPrioritiesUnlocked(const std::string& infoHash) {
   lt::torrent_handle* handle = handleFor(infoHash);
   if (!handle || !handle->status().has_metadata) return;
-  enableSequentialDownload(nullptr, handle);
+  enableSequentialDownload(nullptr, handle, true);
   TorrentState* st = &states_[lower(infoHash)];
   std::set<int> active = applyModeToScope(st->mode, st->scopeFileIds);
   lt::file_storage fs = fileStorage(*handle);
@@ -407,15 +575,19 @@ void TorrentSessionManager::heartbeat(const std::string& infoHash, const std::ve
 
 void TorrentSessionManager::tickModes() {
   collectAlerts();
-  std::lock_guard<std::mutex> guard(lock_);
-  for (auto& [h, st] : states_) {
-    lt::torrent_handle* handle = handleFor(h);
-    if (!handle) continue;
-    if (handle->status().is_seeding && st.mode == TorrentMode::completing) {
-      st.mode = TorrentMode::seeding;
-      applyPrioritiesUnlocked(h);
+  {
+    std::lock_guard<std::mutex> guard(lock_);
+    for (auto& [h, st] : states_) {
+      lt::torrent_handle* handle = handleFor(h);
+      if (!handle) continue;
+      if (handle->status().is_seeding && st.mode == TorrentMode::completing) {
+        st.mode = TorrentMode::seeding;
+        applyPrioritiesUnlocked(h);
+      }
+      if (handle->status().has_metadata) persistTorrentSnapshotUnlocked(h);
     }
   }
+  maybeSaveDhtState();
 }
 
 void TorrentSessionManager::removeTorrent(const std::string& infoHash) {
@@ -429,6 +601,7 @@ void TorrentSessionManager::removeTorrent(const std::string& infoHash) {
     handles_.erase(h);
     states_.erase(h);
     index_.remove(h);
+    removeEngineArtifacts(h);
   }
   fs::path torrentDir = fs::path(savePath_) / h;
   if (fs::is_directory(torrentDir)) {

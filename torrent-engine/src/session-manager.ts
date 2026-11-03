@@ -21,6 +21,7 @@ export interface SessionManager {
   setMode(infoHash: string, mode: TorrentMode): Promise<void>;
   heartbeat(infoHash: string, fileIds: number[], streamActive: boolean): Promise<void>;
   tickModes(): Promise<void>;
+  flushPersistence(): Promise<void>;
   readFileRange(
     infoHash: string,
     fileIndex: number,
@@ -92,6 +93,10 @@ class NativeSessionManager implements SessionManager {
 
   async tickModes(): Promise<void> {
     this.native.tickModes();
+  }
+
+  async flushPersistence(): Promise<void> {
+    this.native.flushPersistence();
   }
 
   async readFileRange(

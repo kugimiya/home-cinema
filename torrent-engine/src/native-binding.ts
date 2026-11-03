@@ -22,6 +22,7 @@ export type NativeLt = {
   setMode(infoHash: string, mode: string): void;
   heartbeat(infoHash: string, fileIds: number[], streamActive: boolean): void;
   tickModes(): void;
+  flushPersistence(): void;
   readFileRange(
     infoHash: string,
     fileIndex: number,

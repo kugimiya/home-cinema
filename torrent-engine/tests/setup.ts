@@ -16,6 +16,7 @@ const mockManager: SessionManager = {
   setMode: async () => {},
   heartbeat: async () => {},
   tickModes: async () => {},
+  flushPersistence: async () => {},
   readFileRange: async () => Buffer.alloc(0),
 };
 
