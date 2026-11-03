@@ -1,0 +1,7 @@
+started=2026-11-03T18:57:03.3273703+04:00 duration_sec=90 serial=192.168.1.147:5555
+--- device props ---
+android_release=11 
+model=BeyondTV2 
+app_pid=2851 
+ended=2026-11-03T18:58:33.6346191+04:00
+bytes=128248 lines=678

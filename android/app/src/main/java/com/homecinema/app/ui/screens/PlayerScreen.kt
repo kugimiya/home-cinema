@@ -273,6 +273,7 @@ fun PlayerScreen(
         if (isTv && tvOverlayVisible && !scrubbing) {
             delay(10_000)
             tvOverlayVisible = false
+            playerViewRef.value?.hideController()
         }
     }
 
@@ -454,7 +455,6 @@ fun PlayerScreen(
         scrubbing = true
         if (isTv) {
             tvOverlayVisible = true
-            playerViewRef.value?.showController()
         } else if (isFullscreen) {
             showPhoneFullscreenOverlay()
         }
@@ -469,17 +469,14 @@ fun PlayerScreen(
         when (event.key) {
             Key.DirectionUp, Key.DirectionDown -> {
                 tvOverlayVisible = true
-                pv?.showController()
                 return false
             }
             Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
                 if (!tvOverlayVisible && pv != null) {
                     if (exo.isPlaying) exo.pause() else exo.play()
                     tvOverlayVisible = true
-                    pv.showController()
                     return true
                 }
-                pv?.showController()
                 return false
             }
             Key.DirectionLeft -> {
@@ -535,7 +532,7 @@ fun PlayerScreen(
                     },
                     onControllerVisibility = { visible ->
                         fullscreenControlsVisible = visible
-                        if (visible) tvOverlayVisible = true
+                        if (visible && !isTv) tvOverlayVisible = true
                     },
                     modifier = Modifier.fillMaxSize(),
                 )
@@ -602,6 +599,19 @@ fun PlayerScreen(
                             },
                         )
                         SecondaryButton(
+                            text = "−1 мин",
+                            onClick = {
+                                exo.seekTo((exo.currentPosition - 60_000).coerceAtLeast(0))
+                            },
+                        )
+                        SecondaryButton(
+                            text = "+1 мин",
+                            onClick = {
+                                val maxPos = exo.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
+                                exo.seekTo((exo.currentPosition + 60_000).coerceAtMost(maxPos))
+                            },
+                        )
+                        SecondaryButton(
                             text = "−10 сек",
                             onClick = {
                                 exo.seekTo((exo.currentPosition - 10_000).coerceAtLeast(0))
@@ -616,7 +626,7 @@ fun PlayerScreen(
                         )
                     }
                     Text(
-                        "OK — пауза/пуск · ↑↓ — панель · ←→ — ±10 сек (или шкала для HLS)",
+                        "OK — пауза/пуск · ↑↓ — панель · ←→ — ±10 сек",
                         color = HomeMuted,
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -1019,10 +1029,10 @@ private fun PlayerViewHost(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                 )
                 player = exo
-                useController = true
+                useController = !isTv
                 resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                 controllerHideOnTouch = !isTv
-                controllerShowTimeoutMs = if (isTv) 12_000 else 4_000
+                controllerShowTimeoutMs = if (isTv) 0 else 4_000
                 isFocusable = true
                 isFocusableInTouchMode = true
                 setControllerVisibilityListener(
@@ -1036,7 +1046,6 @@ private fun PlayerViewHost(
                 if (requestFocus || isTv) {
                     post {
                         requestFocus()
-                        if (isTv) showController()
                     }
                 }
             }
