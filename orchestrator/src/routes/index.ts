@@ -12,7 +12,7 @@ import {
 import { PermissionError } from "../lib/docker-control.js";
 import { fetchEngineDiagnostics } from "../lib/engine-diagnostics.js";
 import { progressFromCache, uploadBytesPerFile } from "../lib/file-progress.js";
-import { buildMediaCatalog, mediaKindForPath } from "../lib/media-files.js";
+import { buildMediaCatalog, mediaKindForPath, pickDefaultPlayable } from "../lib/media-files.js";
 import type { Provider, TorrentMediaFile } from "../lib/models.js";
 import {
   PlayRequestSchema,
@@ -40,12 +40,14 @@ import { TimeoutError } from "../clients/torrent-engine.js";
 import type { PlaySelectPhase } from "../lib/play-select-progress.js";
 
 function needsTranscodeForQuality(probe: ProbeResult, videoHeight: number | null | undefined): boolean {
+  if (probe.media_kind === "audio") return probe.playback_mode !== "direct";
   if (videoHeight == null) return probe.playback_mode !== "direct";
   if (probe.playback_mode !== "direct") return true;
   return videoHeight > 0;
 }
 
 function probeForTranscodeSession(probe: ProbeResult, videoHeight: number | null | undefined): ProbeResult {
+  if (probe.media_kind === "audio") return probe;
   if (videoHeight == null || videoHeight <= 0) return probe;
   let mode = probe.playback_mode;
   if (mode === "direct") mode = "hls_transcode";
@@ -169,7 +171,7 @@ export async function registerRoutes(app: FastifyInstance, ctx: AppContext): Pro
     return {
       hash: opts.infoHash,
       title: "",
-      playback_mode: opts.probe.playback_mode,
+      playback_mode: probeUse.playback_mode,
       playback_url: transcodeMgr.playbackUrl(session.session_id),
       transcode_session_id: session.session_id,
       direct_playable: false,
@@ -184,7 +186,7 @@ export async function registerRoutes(app: FastifyInstance, ctx: AppContext): Pro
     };
   }
 
-  async function playbackForVideo(
+  async function playbackForMedia(
     infoHash: string,
     selected: TorrentMediaFile,
     opts: {
@@ -271,20 +273,22 @@ export async function registerRoutes(app: FastifyInstance, ctx: AppContext): Pro
     return [resp, probe] as const;
   }
 
-  function selectVideoFile(
+  function selectPlayableFile(
     files: TorrentMediaFile[],
     fileIndex: number | null | undefined,
   ): TorrentMediaFile | null {
-    const videos = files.filter((f) => f.kind === "video");
-    if (!videos.length) throw app.httpErrors.badRequest("No video files in torrent");
-    if (fileIndex != null) {
-      const video = videos.find((v) => v.id === fileIndex);
-      if (!video) {
-        throw app.httpErrors.badRequest(`Video file with index ${fileIndex} not found`);
-      }
-      return video;
+    const playable = files.filter((f) => f.kind === "video" || f.kind === "audio");
+    if (!playable.length) {
+      throw app.httpErrors.badRequest("No video or audio files in torrent");
     }
-    if (videos.length === 1) return videos[0]!;
+    if (fileIndex != null) {
+      const file = playable.find((v) => v.id === fileIndex);
+      if (!file) {
+        throw app.httpErrors.badRequest(`Media file with index ${fileIndex} not found`);
+      }
+      return file;
+    }
+    if (playable.length === 1) return playable[0]!;
     return null;
   }
 
@@ -600,8 +604,8 @@ export async function registerRoutes(app: FastifyInstance, ctx: AppContext): Pro
       const raw = extractFiles(detail);
       if (!raw.length) throw app.httpErrors.gatewayTimeout("No files in torrent metadata");
       const catalog = catalogFromRaw(h, raw);
-      const selected = selectVideoFile(catalog, body.file_index);
-      if (!selected) throw app.httpErrors.badRequest("Video file not found");
+      const selected = selectPlayableFile(catalog, body.file_index);
+      if (!selected) throw app.httpErrors.badRequest("Media file not found");
 
       setProgress(
         2,
@@ -622,7 +626,7 @@ export async function registerRoutes(app: FastifyInstance, ctx: AppContext): Pro
       torrentCache.invalidateHash(h, ["list", "cache"]);
       bg.add(() => void torrentEngine.configureDownloadFiles(h, active, raw));
 
-      const [playback] = await playbackForVideo(h, selected, {
+      const [playback] = await playbackForMedia(h, selected, {
         videoHeight: body.video_height,
         bg,
         onProbeAttempt: (attempt) => {
@@ -680,8 +684,8 @@ export async function registerRoutes(app: FastifyInstance, ctx: AppContext): Pro
 
     const raw = extractFiles(detail);
     const catalog = catalogFromRaw(h, raw);
-    const selected = selectVideoFile(catalog, body.file_index);
-    if (!selected) throw app.httpErrors.badRequest("Video file not found");
+    const selected = selectPlayableFile(catalog, body.file_index);
+    if (!selected) throw app.httpErrors.badRequest("Media file not found");
 
     let probe = await probeRunner.probeFile(h, selected.id, selected.path, selected.length, {
       allowHevc: settings.transcodeAllowHevcDirect,
@@ -911,7 +915,7 @@ export async function registerRoutes(app: FastifyInstance, ctx: AppContext): Pro
     }
 
     const catalog = prepared.files ?? [];
-    const selected = selectVideoFile(catalog, null);
+    const selected = pickDefaultPlayable(catalog);
     if (selected) {
       const result = await playSelectHandler(
         { hash: prepared.hash, file_index: selected.id, subtitle_file_ids: [] },

@@ -8,7 +8,7 @@ import {
   listTorrents,
   sleep,
   subtitleFiles,
-  videoFiles,
+  playableFiles,
   type PrepareResponse,
   type TorrentFileStat,
   type TorrentMediaFile,
@@ -141,13 +141,13 @@ export default function WatchSelectPage() {
     );
   }
 
-  const videos = session?.files ? videoFiles(session.files) : [];
+  const playable = session?.files ? playableFiles(session.files) : [];
   const subs = session?.files ? subtitleFiles(session.files) : [];
   const loading = !session?.ready && !error;
 
   return (
     <div>
-      <h1>Что смотреть?</h1>
+      <h1>Что воспроизвести?</h1>
       <p className="muted">{session?.title ?? hash}</p>
 
       <div className="status-panel" aria-live="polite">
@@ -164,16 +164,17 @@ export default function WatchSelectPage() {
 
       {error && <p className="error">{error}</p>}
 
-      {session?.ready && videos.length > 0 && (
+      {session?.ready && playable.length > 0 && (
         <>
           <p className="muted">
-            Качается только выбранный файл (остальные в раздаче отключены). Субтитры можно
-            включить в плеере.
+            Качается только выбранный файл (остальные в раздаче отключены). Для видео субтитры
+            можно включить в плеере.
           </p>
           <table>
             <thead>
               <tr>
                 <th>Файл</th>
+                <th>Тип</th>
                 <th>Качество</th>
                 <th>Озвучка (из имени)</th>
                 <th>Размер</th>
@@ -183,9 +184,10 @@ export default function WatchSelectPage() {
               </tr>
             </thead>
             <tbody>
-              {videos.map((f) => (
+              {playable.map((f) => (
                 <tr key={f.id}>
                   <td>{f.name}</td>
+                  <td>{f.kind === "audio" ? "Аудио" : "Видео"}</td>
                   <td>{f.quality || "—"}</td>
                   <td>{f.voice || "—"}</td>
                   <td>{formatBytes(f.length)}</td>
@@ -201,7 +203,7 @@ export default function WatchSelectPage() {
                   </td>
                   <td>
                     <button type="button" onClick={() => onPick(f)}>
-                      Смотреть
+                      {f.kind === "audio" ? "Слушать" : "Смотреть"}
                     </button>
                   </td>
                 </tr>
@@ -211,8 +213,8 @@ export default function WatchSelectPage() {
         </>
       )}
 
-      {session?.ready && videos.length === 0 && (
-        <p className="error">В торренте нет видеофайлов.</p>
+      {session?.ready && playable.length === 0 && (
+        <p className="error">В торренте нет видео- или аудиофайлов.</p>
       )}
 
       {subs.length > 0 && session?.ready && (

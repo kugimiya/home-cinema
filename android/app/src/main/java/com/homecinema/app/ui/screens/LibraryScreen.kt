@@ -249,8 +249,11 @@ private fun TorrentCard(
                         Text(fileBasename(f.path))
                         Text(fileStatusLabel(f), color = HomeMuted)
                     }
-                    if (f.kind == "video") {
-                        SecondaryButton(text = "Файл", onClick = { onWatchFile(f) })
+                    if (f.kind == "video" || f.kind == "audio") {
+                        SecondaryButton(
+                            text = if (f.kind == "audio") "Слушать" else "Файл",
+                            onClick = { onWatchFile(f) },
+                        )
                     }
                 }
             }

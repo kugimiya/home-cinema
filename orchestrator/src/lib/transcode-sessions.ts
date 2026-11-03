@@ -180,6 +180,7 @@ export class TranscodeSessionManager {
       audioCopy: session.audio_copy,
       audioOrdinal: session.audio_ordinal,
       startSec: session.start_sec,
+      videoHeight: session.video_height,
     });
     session.process = spawnFfmpeg(cmd);
     session.ffmpeg_started = true;

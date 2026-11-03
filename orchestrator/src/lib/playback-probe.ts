@@ -1,9 +1,11 @@
 import { spawn } from "node:child_process";
 import { extname } from "node:path";
+import { mediaKindForPath } from "./media-files.js";
 import type { AudioTrackInfo, PlaybackMode } from "./models.js";
 
 export interface ProbeResult {
   status: "ok" | "pending";
+  media_kind: "video" | "audio";
   playback_mode: PlaybackMode;
   direct_playable: boolean;
   audio_tracks: AudioTrackInfo[];
@@ -17,6 +19,7 @@ const BROWSER_VIDEO_HEVC = new Set(["hevc", "hev1", "h265"]);
 const BROWSER_AUDIO = new Set(["aac", "mp3", "opus", "flac", "vorbis"]);
 const DIRECT_CONTAINERS = new Set(["mov", "mp4", "m4v", "webm", "mkv", "matroska"]);
 const FORCE_TRANSCODE_EXT = new Set([".avi", ".wmv", ".asf", ".mpg", ".mpeg", ".vob"]);
+const DIRECT_AUDIO_EXT = new Set([".mp3", ".opus"]);
 
 function normCodec(name: string | null | undefined): string {
   if (!name) return "";
@@ -118,6 +121,13 @@ export function extractDurationSec(data: Record<string, unknown>): number | null
     const stTag = durationFromTags((stream.tags ?? {}) as Record<string, unknown>);
     if (stTag != null && (best == null || stTag > best)) best = stTag;
   }
+  for (const stream of streams) {
+    if (stream.codec_type !== "audio") continue;
+    const streamDur = parseDurationNumber(stream.duration);
+    if (streamDur != null && (best == null || streamDur > best)) best = streamDur;
+    const stTag = durationFromTags((stream.tags ?? {}) as Record<string, unknown>);
+    if (stTag != null && (best == null || stTag > best)) best = stTag;
+  }
   return best;
 }
 
@@ -127,13 +137,18 @@ export function parseProbePayload(
   allowHevc: boolean,
 ): ProbeResult {
   const streams = (data.streams ?? []) as Array<Record<string, unknown>>;
+  const videoStreams = streams.filter((s) => s.codec_type === "video");
+  const audioStreams = streams.filter((s) => s.codec_type === "audio");
+  const kind = mediaKindForPath(path);
+
+  if (kind === "audio" || (videoStreams.length === 0 && audioStreams.length > 0)) {
+    return parseAudioProbePayload(data, path);
+  }
+  if (videoStreams.length === 0) throw new Error("No video stream in file");
+
   const fmt = (data.format ?? {}) as Record<string, unknown>;
   const formatName = String(fmt.format_name ?? "").toLowerCase();
   const ext = extname(path).toLowerCase();
-
-  const videoStreams = streams.filter((s) => s.codec_type === "video");
-  const audioStreams = streams.filter((s) => s.codec_type === "audio");
-  if (videoStreams.length === 0) throw new Error("No video stream in file");
 
   const durationSec = extractDurationSec(data);
   const videoCodec = String(videoStreams[0]!.codec_name ?? "");
@@ -177,6 +192,7 @@ export function parseProbePayload(
   if (!forceTranscode && videoOk && allAudioOk && containerOk) {
     return {
       status: "ok",
+      media_kind: "video",
       playback_mode: "direct",
       direct_playable: true,
       audio_tracks: audioTracks,
@@ -192,11 +208,67 @@ export function parseProbePayload(
 
   return {
     status: "ok",
+    media_kind: "video",
     playback_mode: mode,
     direct_playable: false,
     audio_tracks: audioTracks,
     video_copy: videoCopy,
     audio_copy: audioCopy,
+    duration_sec: durationSec,
+  };
+}
+
+function parseAudioProbePayload(data: Record<string, unknown>, path: string): ProbeResult {
+  const streams = (data.streams ?? []) as Array<Record<string, unknown>>;
+  const audioStreams = streams.filter((s) => s.codec_type === "audio");
+  if (audioStreams.length === 0) throw new Error("No audio stream in file");
+
+  const durationSec = extractDurationSec(data);
+  const ext = extname(path).toLowerCase();
+
+  const audioTracks: AudioTrackInfo[] = audioStreams.map((stream, i) => {
+    const tags = (stream.tags ?? {}) as Record<string, unknown>;
+    return {
+      index: i,
+      stream_index: parseInt(String(stream.index ?? i), 10),
+      codec: stream.codec_name != null ? String(stream.codec_name) : null,
+      language:
+        tags.language != null
+          ? String(tags.language)
+          : tags.LANGUAGE != null
+            ? String(tags.LANGUAGE)
+            : null,
+      title:
+        tags.title != null ? String(tags.title) : tags.TITLE != null ? String(tags.TITLE) : null,
+      label: trackLabel(stream, i),
+    };
+  });
+
+  const primaryCodec = audioTracks[0]?.codec ?? "";
+  const directOk =
+    DIRECT_AUDIO_EXT.has(ext) && audioBrowserOk(primaryCodec) && audioTracks.length === 1;
+
+  if (directOk) {
+    return {
+      status: "ok",
+      media_kind: "audio",
+      playback_mode: "direct",
+      direct_playable: true,
+      audio_tracks: audioTracks,
+      video_copy: false,
+      audio_copy: true,
+      duration_sec: durationSec,
+    };
+  }
+
+  return {
+    status: "ok",
+    media_kind: "audio",
+    playback_mode: "hls_audio",
+    direct_playable: false,
+    audio_tracks: audioTracks,
+    video_copy: false,
+    audio_copy: false,
     duration_sec: durationSec,
   };
 }
@@ -319,6 +391,7 @@ export async function probePlayback(opts: {
 function pendingResult(): ProbeResult {
   return {
     status: "pending",
+    media_kind: "video",
     playback_mode: "direct",
     direct_playable: true,
     audio_tracks: [],

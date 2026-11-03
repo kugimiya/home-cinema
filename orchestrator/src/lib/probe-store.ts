@@ -3,6 +3,7 @@ import { extname } from "node:path";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AudioTrackInfo } from "./models.js";
+import { mediaKindForPath } from "./media-files.js";
 import type { ProbeResult } from "./playback-probe.js";
 
 export function defaultWarmHeadBytes(
@@ -65,8 +66,11 @@ export class ProbeCacheStore {
     if (row.file_path !== filePath) return null;
     if (fileLength > 0 && parseInt(String(row.file_length), 10) !== fileLength) return null;
     const tracksRaw = JSON.parse(String(row.audio_tracks_json || "[]")) as AudioTrackInfo[];
+    const filePathCached = String(row.file_path);
+    const isAudioFile = mediaKindForPath(filePathCached) === "audio";
     return {
       status: "ok",
+      media_kind: isAudioFile ? "audio" : "video",
       playback_mode: row.playback_mode as ProbeResult["playback_mode"],
       direct_playable: Boolean(row.direct_playable),
       audio_tracks: tracksRaw,

@@ -13,7 +13,7 @@ import { SessionManager } from "./sessions.js";
 const settings = loadSettings();
 const mgr = new SessionManager(settings.workDir, settings.maxSessions);
 
-const playbackModeSchema = z.enum(["direct", "hls_transcode", "hls_remux"]);
+const playbackModeSchema = z.enum(["direct", "hls_transcode", "hls_remux", "hls_audio"]);
 
 const createSessionBody = z.object({
   hash: z.string(),
@@ -125,7 +125,9 @@ app.get<{ Params: { sessionId: string; filename: string } }>(
       const filePath = mgr.resolveFile(req.params.sessionId, req.params.filename);
       const media = req.params.filename.endsWith(".m3u8")
         ? "application/vnd.apple.mpegurl"
-        : "video/mp4";
+        : req.params.filename.endsWith(".m4s") || req.params.filename.endsWith(".mp4")
+          ? "video/mp4"
+          : "application/octet-stream";
       return reply.type(media).send(fs.createReadStream(filePath));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

@@ -4,7 +4,18 @@ import { fileIndexAndPath } from "./torrent-files.js";
 
 const VIDEO_EXT = [".mkv", ".mp4", ".avi", ".mov", ".m4v", ".webm", ".ts", ".m2ts"];
 const SUBTITLE_EXT = [".srt", ".ass", ".ssa", ".vtt", ".sub", ".sup"];
-const AUDIO_EXT = [".mp3", ".flac", ".aac", ".m4a", ".wav", ".opus"];
+const AUDIO_EXT = [
+  ".mp3",
+  ".flac",
+  ".aac",
+  ".m4a",
+  ".wav",
+  ".opus",
+  ".ogg",
+  ".oga",
+  ".wma",
+  ".ape",
+];
 
 export function mediaKindForPath(path: string): MediaKind {
   const lower = path.toLowerCase();
@@ -60,4 +71,17 @@ export function pickDefaultVideo(files: TorrentMediaFile[]): TorrentMediaFile | 
   if (videos.length === 0) return null;
   if (videos.length === 1) return videos[0]!;
   return videos.reduce((a, b) => (a.length >= b.length ? a : b));
+}
+
+export function playableMediaFiles(files: TorrentMediaFile[]): TorrentMediaFile[] {
+  return files.filter((f) => f.kind === "video" || f.kind === "audio");
+}
+
+export function pickDefaultPlayable(files: TorrentMediaFile[]): TorrentMediaFile | null {
+  const video = pickDefaultVideo(files);
+  if (video) return video;
+  const audio = files.filter((f) => f.kind === "audio");
+  if (audio.length === 0) return null;
+  if (audio.length === 1) return audio[0]!;
+  return audio.reduce((a, b) => (a.length >= b.length ? a : b));
 }

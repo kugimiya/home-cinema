@@ -9,7 +9,12 @@ export const ProviderSchema = z.enum([
 ]);
 export type Provider = z.infer<typeof ProviderSchema>;
 
-export const PlaybackModeSchema = z.enum(["direct", "hls_transcode", "hls_remux"]);
+export const PlaybackModeSchema = z.enum([
+  "direct",
+  "hls_transcode",
+  "hls_remux",
+  "hls_audio",
+]);
 export type PlaybackMode = z.infer<typeof PlaybackModeSchema>;
 
 export const MediaKindSchema = z.enum(["video", "subtitle", "audio", "other"]);

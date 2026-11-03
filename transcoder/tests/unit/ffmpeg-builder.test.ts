@@ -31,4 +31,20 @@ describe("buildFfmpegCommand", () => {
     const audioIdx = cmd.indexOf("-c:a");
     expect(cmd[audioIdx + 1]).toBe("copy");
   });
+
+  it("audio-only opus 320k hls", () => {
+    const cmd = buildFfmpegCommand("/torrents/x/album.flac", "/tmp/out3", {
+      playbackMode: "hls_audio",
+      videoCopy: false,
+      audioCopy: false,
+      audioOrdinal: 0,
+      startSec: 0,
+      videoHeight: null,
+    });
+    const text = cmd.join(" ");
+    expect(text).toContain("-vn");
+    expect(text).toContain("libopus");
+    expect(text).toContain("320k");
+    expect(text).not.toContain("0:v:0");
+  });
 });

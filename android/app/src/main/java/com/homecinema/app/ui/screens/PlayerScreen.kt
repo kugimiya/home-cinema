@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material3.DropdownMenuItem
@@ -79,6 +80,8 @@ import com.homecinema.app.data.api.TranscodeSessionBody
 import com.homecinema.app.data.api.formatPlaybackTime
 import com.homecinema.app.data.api.playbackUri
 import com.homecinema.app.data.api.toPlayerState
+import com.homecinema.app.data.api.isAudioOnly
+import com.homecinema.app.data.api.transcodeStatusLabel
 import com.homecinema.app.ui.components.PrimaryButton
 import com.homecinema.app.ui.components.SecondaryButton
 import com.homecinema.app.ui.player.PlayerKeyDispatcher
@@ -184,6 +187,7 @@ fun PlayerScreen(
     }
 
     val state = playerState
+    val isAudioOnly = state?.isAudioOnly() == true
     val hlsMode = state != null && state.playbackMode != "direct"
     LaunchedEffect(state?.durationSec, state?.fileLengthBytes) {
         val s = state ?: return@LaunchedEffect
@@ -288,8 +292,8 @@ fun PlayerScreen(
         transcodeBusy = true
         transcodeError = null
         val prevSession = state.transcodeSessionId
-        val height = heightOverride ?: videoHeight
-        if (heightOverride != null) {
+        val height = if (isAudioOnly) null else (heightOverride ?: videoHeight)
+        if (heightOverride != null && !isAudioOnly) {
             videoHeight = heightOverride
         }
         try {
@@ -318,6 +322,7 @@ fun PlayerScreen(
             playerState = state.copy(
                 playbackUrl = url,
                 transcodeSessionId = res.sessionId,
+                playbackMode = res.playbackMode,
                 selectedAudioIndex = res.selectedAudioIndex,
                 audioTracks = res.audioTracks,
                 durationSec = res.durationSec ?: state.durationSec,
@@ -407,7 +412,7 @@ fun PlayerScreen(
         }
     }
 
-    val immersive = isFullscreen || isTv
+    val immersive = (isFullscreen || isTv) && !isAudioOnly
 
     fun showPhoneFullscreenOverlay() {
         fullscreenControlsVisible = true
@@ -628,9 +633,16 @@ fun PlayerScreen(
             state != null -> {
                 Text(state.title, modifier = Modifier.padding(horizontal = 12.dp))
                 Text(state.fileName, color = HomeMuted, modifier = Modifier.padding(horizontal = 12.dp))
-                if (hlsMode) {
+                if (isAudioOnly) {
                     Text(
-                        "Перекодирование для устройства",
+                        "Аудио",
+                        color = HomeMuted,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    )
+                }
+                state.transcodeStatusLabel()?.let { label ->
+                    Text(
+                        label,
                         color = HomeMuted,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                     )
@@ -661,6 +673,7 @@ fun PlayerScreen(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
                     )
                 }
+                if (!isAudioOnly) {
                 var qualityExpanded by remember { mutableStateOf(false) }
                 ExposedDropdownMenuBox(
                     expanded = qualityExpanded,
@@ -710,6 +723,7 @@ fun PlayerScreen(
                         }
                     }
                 }
+                }
                 val tracks = state.audioTracks
                 if (tracks.size > 1 && hlsMode) {
                     AudioTrackDropdown(
@@ -727,8 +741,17 @@ fun PlayerScreen(
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .weight(1f)
-                        .padding(horizontal = 12.dp),
+                        .then(
+                            if (isAudioOnly) {
+                                Modifier
+                                    .padding(horizontal = 12.dp)
+                                    .height(120.dp)
+                            } else {
+                                Modifier
+                                    .weight(1f)
+                                    .padding(horizontal = 12.dp)
+                            },
+                        ),
                 ) {
                     key(state.playbackUri()) {
                         PlayerViewHost(
@@ -749,7 +772,9 @@ fun PlayerScreen(
                     Modifier.padding(12.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    PrimaryButton(text = "На весь экран", onClick = { isFullscreen = true })
+                    if (!isAudioOnly) {
+                        PrimaryButton(text = "На весь экран", onClick = { isFullscreen = true })
+                    }
                 }
             }
         }

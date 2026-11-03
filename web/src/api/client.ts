@@ -63,7 +63,7 @@ export interface PrepareResponse {
   ready: boolean;
 }
 
-export type PlaybackMode = "direct" | "hls_transcode" | "hls_remux";
+export type PlaybackMode = "direct" | "hls_transcode" | "hls_remux" | "hls_audio";
 
 export interface AudioTrackInfo {
   index: number;
@@ -582,6 +582,14 @@ export function fileBasename(path: string) {
 
 export function videoFiles(files: TorrentMediaFile[]) {
   return files.filter((f) => f.kind === "video");
+}
+
+export function audioFiles(files: TorrentMediaFile[]) {
+  return files.filter((f) => f.kind === "audio");
+}
+
+export function playableFiles(files: TorrentMediaFile[]) {
+  return files.filter((f) => f.kind === "video" || f.kind === "audio");
 }
 
 export function subtitleFiles(files: TorrentMediaFile[]) {

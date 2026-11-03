@@ -104,10 +104,23 @@ fun WatchSelectScreen(
                     val s = session!!
                     Text(s.title, style = androidx.compose.material3.MaterialTheme.typography.titleLarge)
                     Text(s.message, color = HomeMuted)
-                    val videos = s.files.filter { it.kind == "video" }
-                    LazyColumn(Modifier.padding(top = 12.dp)) {
-                        items(videos, key = { it.id }) { f ->
-                            VideoFileRow(file = f, onPlay = { onPlayFile(f.id) })
+                    val playable = s.files.filter { it.kind == "video" || it.kind == "audio" }
+                    if (playable.isEmpty()) {
+                        Text(
+                            "В торренте нет видео- или аудиофайлов.",
+                            color = HomeError,
+                            modifier = Modifier.padding(top = 12.dp),
+                        )
+                    } else {
+                        Text(
+                            "Качается только выбранный файл. Для видео субтитры — в плеере.",
+                            color = HomeMuted,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                        LazyColumn(Modifier.padding(top = 12.dp)) {
+                            items(playable, key = { it.id }) { f ->
+                                MediaFileRow(file = f, onPlay = { onPlayFile(f.id) })
+                            }
                         }
                     }
                 }
@@ -121,10 +134,17 @@ fun WatchSelectScreen(
 }
 
 @Composable
-private fun VideoFileRow(file: TorrentMediaFile, onPlay: () -> Unit) {
+private fun MediaFileRow(file: TorrentMediaFile, onPlay: () -> Unit) {
     Column(Modifier.padding(vertical = 8.dp)) {
         Text(file.name)
-        Text(formatBytes(file.length), color = HomeMuted)
-        PrimaryButton(text = "Смотреть", onClick = onPlay, modifier = Modifier.padding(top = 4.dp))
+        Text(
+            "${if (file.kind == "audio") "Аудио" else "Видео"} · ${formatBytes(file.length)}",
+            color = HomeMuted,
+        )
+        PrimaryButton(
+            text = if (file.kind == "audio") "Слушать" else "Смотреть",
+            onClick = onPlay,
+            modifier = Modifier.padding(top = 4.dp),
+        )
     }
 }

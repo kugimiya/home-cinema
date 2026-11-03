@@ -400,6 +400,7 @@ export default function LibraryPage() {
                           <table className="files-table">
                             <thead>
                               <tr>
+                                <th>Тип</th>
                                 <th>Файл</th>
                                 <th>Размер</th>
                                 <th
@@ -413,9 +414,10 @@ export default function LibraryPage() {
                             </thead>
                             <tbody>
                               {files.map((f) => {
-                                const canWatch = f.kind === "video";
+                                const canPlay = f.kind === "video" || f.kind === "audio";
                                 return (
                                   <tr key={f.id}>
+                                    <td className="muted">{f.kind === "audio" ? "Аудио" : f.kind === "video" ? "Видео" : "—"}</td>
                                     <td title={f.path}>{fileBasename(f.path)}</td>
                                     <td>{formatBytes(f.length)}</td>
                                     <td className="muted">
@@ -425,12 +427,12 @@ export default function LibraryPage() {
                                     </td>
                                     <td>{fileStatusLabel(f)}</td>
                                     <td>
-                                      {canWatch ? (
+                                      {canPlay ? (
                                         <button
                                           type="button"
                                           onClick={() => onWatchFile(t, f)}
                                         >
-                                          Смотреть файл
+                                          {f.kind === "audio" ? "Слушать" : "Смотреть файл"}
                                         </button>
                                       ) : (
                                         <span className="muted">—</span>

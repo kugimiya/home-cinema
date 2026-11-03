@@ -265,6 +265,10 @@ th {
   margin-top: 1rem;
 }
 
+.player-wrap--audio video {
+  max-height: 4rem;
+}
+
 video {
   width: 100%;
   max-height: 70vh;

@@ -10,6 +10,7 @@ import {
   selectPlayFile,
   setDownloadScope,
   VIDEO_QUALITY_PRESETS,
+  playableFiles,
   subtitleFiles,
   formatBytes,
   formatPlaybackTime,
@@ -126,6 +127,8 @@ export default function PlayerPage() {
   const scrubbingRef = useRef(false);
 
   const state = playerState;
+  const currentFile = state?.files.find((f) => f.id === state.file_index);
+  const isAudioOnly = currentFile?.kind === "audio";
   const subs: TorrentMediaFile[] = state ? subtitleFiles(state.files) : [];
   const activeSub =
     activeSubId === "off" ? null : subs.find((s) => s.id === activeSubId) ?? null;
@@ -233,8 +236,12 @@ export default function PlayerPage() {
       setTranscodeBusy(true);
       setTranscodeError(null);
       const prevSession = sessionIdRef.current;
-      const height =
-        heightOverride !== undefined ? heightOverride : videoHeight;
+      const audioOnly = state.files.find((f) => f.id === state.file_index)?.kind === "audio";
+      const height = audioOnly
+        ? null
+        : heightOverride !== undefined
+          ? heightOverride
+          : videoHeight;
       try {
         if (prevSession) {
           await stopSession(prevSession);
@@ -467,16 +474,20 @@ export default function PlayerPage() {
 
   return (
     <div>
-      <h1>{state.title}</h1>
+      <h1>{isAudioOnly ? "Слушаем" : state.title}</h1>
       <p className="muted">
         {state.file_name} · hash {state.hash.slice(0, 8)}…
-        {hlsMode && " · перекодирование для браузера"}
+        {hlsMode &&
+          (state.playback_mode === "hls_audio"
+            ? " · перекодирование в Opus 320 kb/s"
+            : " · перекодирование для браузера")}
       </p>
 
       {transcodeBusy && <p className="muted">Перекодирование…</p>}
       {transcodeError && <p className="error">{transcodeError}</p>}
 
       <div className="track-panel">
+        {!isAudioOnly && (
         <label className="track-field">
           Качество
           <select
@@ -502,6 +513,7 @@ export default function PlayerPage() {
             ))}
           </select>
         </label>
+        )}
         {showApiAudio && (
           <label className="track-field">
             Озвучка
@@ -538,7 +550,7 @@ export default function PlayerPage() {
             </select>
           </label>
         )}
-        {subs.length > 0 && (
+        {subs.length > 0 && !isAudioOnly && (
           <label className="track-field">
             Субтитры
             <select
@@ -559,7 +571,7 @@ export default function PlayerPage() {
         )}
       </div>
 
-      {!hlsMode && browserAudioTracks.length === 0 && (
+      {!hlsMode && !isAudioOnly && browserAudioTracks.length === 0 && (
         <p className="muted track-hint">
           Если в MKV несколько озвучек, браузер может не показать переключатель — тогда откройте
           URL в VLC (Audio → Audio track).
@@ -599,7 +611,7 @@ export default function PlayerPage() {
         </p>
       )}
 
-      <div className="player-wrap">
+      <div className={`player-wrap${isAudioOnly ? " player-wrap--audio" : ""}`}>
         <video
           ref={videoRef}
           key={hlsMode ? `hls-${activeSubId}` : `${state.stream_url}-${activeSubId}`}
@@ -608,6 +620,7 @@ export default function PlayerPage() {
           controlsList={showFullTimeline ? "noseek" : undefined}
           autoPlay
           crossOrigin={hlsMode ? undefined : "anonymous"}
+          {...(isAudioOnly ? { playsInline: true } : {})}
         >
           {activeSub?.stream_url && (
             <track
@@ -623,7 +636,7 @@ export default function PlayerPage() {
         <button type="button" onClick={copyUrl}>
           Скопировать URL потока
         </button>
-        {state.files.filter((f) => f.kind === "video").length > 1 && (
+        {playableFiles(state.files).length > 1 && (
           <button
             type="button"
             className="secondary"
@@ -639,8 +652,9 @@ export default function PlayerPage() {
         </button>
       </div>
       <p className="muted" style={{ marginTop: "1rem" }}>
-        Для VLC/MPV: File → Open Network → вставьте URL выше. Торрент продолжит качаться и
-        раздаваться после просмотра.
+        {isAudioOnly
+          ? "Для VLC/MPV: File → Open Network → вставьте URL выше. Торрент продолжит качаться после прослушивания."
+          : "Для VLC/MPV: File → Open Network → вставьте URL выше. Торрент продолжит качаться и раздаваться после просмотра."}
       </p>
     </div>
   );

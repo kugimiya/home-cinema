@@ -21,6 +21,7 @@ describe("ProbeCacheStore", () => {
         1000,
         {
           status: "ok",
+          media_kind: "video",
           playback_mode: "direct",
           direct_playable: true,
           audio_tracks: [{ index: 0, stream_index: 0, label: "Дорожка 1" }],
