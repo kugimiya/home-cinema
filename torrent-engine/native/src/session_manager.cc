@@ -20,6 +20,7 @@
 #include <regex>
 #include <sstream>
 #include <thread>
+#include <vector>
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
@@ -800,12 +801,39 @@ std::pair<std::string, std::int64_t> TorrentSessionManager::resolveFilePath(cons
   if (idx < 0 || idx >= fs.num_files()) throw std::runtime_error("File index out of range");
   std::string rel = fs.file_path(idx);
   std::int64_t length = fs.file_size(idx);
-  fs::path path = fs::path(handle->save_path()) / handle->name() / rel;
-  if (!fs::is_regular_file(path)) {
-    fs::path alt = fs::path(savePath_) / lower(infoHash) / rel;
-    if (fs::is_regular_file(alt)) path = alt;
+  const std::string name = handle->name();
+  const std::string h = lower(infoHash);
+
+  std::vector<fs::path> candidates;
+  auto pushCandidate = [&](fs::path p) {
+    if (p.empty()) return;
+    for (const auto& existing : candidates) {
+      if (existing == p) return;
+    }
+    candidates.push_back(std::move(p));
+  };
+
+  pushCandidate(fs::path(savePath_) / rel);
+  pushCandidate(fs::path(handle->save_path()) / rel);
+  if (!name.empty()) {
+    pushCandidate(fs::path(handle->save_path()) / name / rel);
+    pushCandidate(fs::path(savePath_) / name / rel);
+    if (rel.size() > name.size() && rel.compare(0, name.size(), name) == 0 &&
+        rel[name.size()] == '/') {
+      const std::string tail = rel.substr(name.size() + 1);
+      pushCandidate(fs::path(savePath_) / name / tail);
+      pushCandidate(fs::path(handle->save_path()) / name / tail);
+    }
   }
-  return {path.string(), length};
+  pushCandidate(fs::path(savePath_) / h / rel);
+  pushCandidate(fs::path(savePath_) / fs::path(rel).filename());
+
+  for (const auto& candidate : candidates) {
+    if (fs::is_regular_file(candidate)) {
+      return {candidate.string(), length};
+    }
+  }
+  return {(fs::path(savePath_) / rel).string(), length};
 }
 
 std::vector<std::uint8_t> TorrentSessionManager::readFileRange(const std::string& infoHash,
@@ -838,7 +866,9 @@ std::vector<std::uint8_t> TorrentSessionManager::readFileRange(const std::string
         std::vector<std::uint8_t> data(want);
         in.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(want));
         data.resize(static_cast<std::size_t>(in.gcount()));
-        if (data.size() >= want || status.is_seeding) return data;
+        if (data.size() >= want) return data;
+        if (size >= endClamped + 1 && !data.empty()) return data;
+        if (status.is_seeding && !data.empty()) return data;
       }
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(250));

@@ -261,8 +261,24 @@ th {
   font-size: 0.82rem;
 }
 
+.player-file-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.75rem 0 0;
+}
+
 .player-wrap {
-  margin-top: 1rem;
+  margin-top: 0.75rem;
+}
+
+.player-wrap--audio audio {
+  width: 100%;
+  max-height: none;
+}
+
+audio {
+  width: 100%;
 }
 
 .player-wrap--audio video {

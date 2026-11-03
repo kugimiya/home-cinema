@@ -9,6 +9,7 @@ import {
   PLAYLIST_NAME,
   type PlaybackMode,
 } from "./ffmpeg-builder.js";
+import { pickFfmpegSource } from "./source-pick.js";
 
 export type TranscodeSession = {
   sessionId: string;
@@ -48,6 +49,7 @@ export class SessionManager {
   async create(opts: {
     sourcePath: string | null;
     sourceUrl: string | null;
+    expectedFileLength?: number | null;
     playbackMode: PlaybackMode;
     videoCopy: boolean;
     audioCopy: boolean;
@@ -65,15 +67,19 @@ export class SessionManager {
         }
       }
 
-      const source =
-        opts.sourcePath && fs.statSync(opts.sourcePath, { throwIfNoEntry: false })?.isFile()
-          ? opts.sourcePath
-          : opts.sourceUrl;
+      const source = pickFfmpegSource(
+        opts.sourcePath,
+        opts.sourceUrl,
+        opts.expectedFileLength,
+      );
       if (!source) {
         throw new Error("No valid source_path or source_url");
       }
 
       const sessionId = randomUUID();
+      console.info(
+        `ffmpeg input session=${sessionId.slice(0, 8)} ${/^https?:\/\//i.test(source) ? "url" : "file"} ${source.slice(-64)}`,
+      );
       const outDir = path.join(this.workDir, sessionId);
       const cmd = buildFfmpegCommand(source, outDir, {
         playbackMode: opts.playbackMode,

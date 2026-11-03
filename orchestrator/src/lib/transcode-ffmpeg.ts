@@ -44,13 +44,17 @@ export function buildFfmpegCommand(
 
   const cmd: string[] = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-y"];
   if (opts.startSec > 0.05) cmd.push("-ss", opts.startSec.toFixed(3));
+  const isHttp = /^https?:\/\//i.test(sourceUrl);
+  if (isHttp) {
+    cmd.push("-rw_timeout", "30000000");
+  }
   cmd.push(
     "-fflags",
     "+genpts+discardcorrupt",
     "-probesize",
-    "32M",
+    isHttp ? "8M" : "32M",
     "-analyzeduration",
-    "10M",
+    isHttp ? "8M" : "10M",
     "-i",
     sourceUrl,
   );

@@ -39,6 +39,7 @@ export class TranscoderClient {
     startSec: number;
     videoHeight: number | null | undefined;
     sourceUrl: string;
+    fileLength?: number | null;
   }): Promise<Record<string, unknown>> {
     const body = {
       hash: opts.infoHash.toLowerCase(),
@@ -52,6 +53,7 @@ export class TranscoderClient {
       video_height: opts.videoHeight ?? null,
       source_path: this.sourcePath(opts.infoHash, opts.relativePath),
       source_url: opts.sourceUrl,
+      file_length: opts.fileLength ?? null,
     };
     console.info(
       `transcoder create hash=${opts.infoHash.slice(0, 8)} file=${opts.fileIndex} url=${this.baseUrl}`,

@@ -28,6 +28,23 @@ function appendHlsOutput(cmd: string[], outDir: string): void {
   );
 }
 
+function appendInput(cmd: string[], source: string): void {
+  const isHttp = /^https?:\/\//i.test(source);
+  if (isHttp) {
+    cmd.push("-rw_timeout", "30000000");
+  }
+  cmd.push(
+    "-fflags",
+    "+genpts+discardcorrupt",
+    "-probesize",
+    isHttp ? "8M" : "32M",
+    "-analyzeduration",
+    isHttp ? "8M" : "10M",
+    "-i",
+    source,
+  );
+}
+
 export function buildFfmpegCommand(
   source: string,
   outDir: string,
@@ -52,16 +69,7 @@ export function buildFfmpegCommand(
   if (opts.startSec > 0.05) {
     cmd.push("-ss", opts.startSec.toFixed(3));
   }
-  cmd.push(
-    "-fflags",
-    "+genpts+discardcorrupt",
-    "-probesize",
-    "32M",
-    "-analyzeduration",
-    "10M",
-    "-i",
-    source,
-  );
+  appendInput(cmd, source);
 
   if (opts.playbackMode === "hls_audio") {
     cmd.push("-map", `0:a:${opts.audioOrdinal}?`, "-vn");

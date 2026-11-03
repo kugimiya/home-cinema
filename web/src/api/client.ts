@@ -594,6 +594,20 @@ export function playableFiles(files: TorrentMediaFile[]) {
   return files.filter((f) => f.kind === "video" || f.kind === "audio");
 }
 
+/** Previous/next playable file in torrent list order (video + audio). */
+export function adjacentPlayableFile(
+  files: TorrentMediaFile[],
+  currentFileId: number,
+  direction: -1 | 1,
+): TorrentMediaFile | null {
+  const list = playableFiles(files);
+  const idx = list.findIndex((f) => f.id === currentFileId);
+  if (idx < 0) return null;
+  const next = idx + direction;
+  if (next < 0 || next >= list.length) return null;
+  return list[next];
+}
+
 export function subtitleFiles(files: TorrentMediaFile[]) {
   return files.filter((f) => f.kind === "subtitle");
 }
@@ -601,14 +615,30 @@ export function subtitleFiles(files: TorrentMediaFile[]) {
 /** Resolve API media paths against the current page origin (nginx → orchestrator). */
 export function absoluteMediaUrl(pathOrUrl: string | null | undefined): string {
   if (!pathOrUrl) return "";
-  if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
+  if (/^https?:\/\//i.test(pathOrUrl)) {
+    if (typeof window !== "undefined") {
+      try {
+        const parsed = new URL(pathOrUrl);
+        const pageHost = window.location.hostname;
+        if (
+          (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") &&
+          pageHost !== parsed.hostname
+        ) {
+          return `${window.location.origin}${parsed.pathname}${parsed.search}${parsed.hash}`;
+        }
+      } catch {
+        /* keep original */
+      }
+    }
+    return pathOrUrl;
+  }
   const path = pathOrUrl.startsWith("/") ? pathOrUrl : `/${pathOrUrl}`;
   if (typeof window === "undefined") return path;
   return `${window.location.origin}${path}`;
 }
 
 export function toPlayerState(session: PlayResponse): PlayerState {
-  const streamUrl = session.stream_url;
+  const streamUrl = absoluteMediaUrl(session.stream_url);
   const fileIndex = session.file_index;
   const fileName = session.file_name;
   const playbackMode = session.playback_mode ?? "direct";

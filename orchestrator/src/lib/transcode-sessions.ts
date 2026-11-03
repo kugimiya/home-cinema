@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import type { TranscoderClient } from "../clients/transcoder.js";
 import type { PlaybackMode } from "./models.js";
 import type { ProbeResult } from "./playback-probe.js";
+import { pickFfmpegSource } from "./source-pick.js";
 import {
   buildFfmpegCommand,
   finalizeHlsPlaylist,
@@ -65,6 +66,7 @@ export class TranscodeSessionManager {
     startSec?: number;
     videoHeight?: number | null;
     relativePath?: string;
+    fileLength?: number | null;
   }): Promise<TranscodeSession> {
     await this.purgeExpired();
     if (this.sessions.size >= this.maxSessions) {
@@ -112,6 +114,7 @@ export class TranscodeSessionManager {
         startSec: Math.max(0, opts.startSec ?? 0),
         videoHeight: opts.videoHeight,
         sourceUrl: opts.sourceUrl,
+        fileLength: opts.fileLength,
       });
       session = {
         ...localSession,
@@ -174,7 +177,10 @@ export class TranscodeSessionManager {
       return;
     }
 
-    const cmd = buildFfmpegCommand(session.source_url, session.out_dir, {
+    const source =
+      pickFfmpegSource(session.file_path, session.source_url, null) ??
+      session.source_url;
+    const cmd = buildFfmpegCommand(source, session.out_dir, {
       playbackMode: session.playback_mode,
       videoCopy: session.video_copy,
       audioCopy: session.audio_copy,

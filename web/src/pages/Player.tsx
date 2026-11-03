@@ -11,6 +11,7 @@ import {
   setDownloadScope,
   VIDEO_QUALITY_PRESETS,
   playableFiles,
+  adjacentPlayableFile,
   subtitleFiles,
   formatBytes,
   formatPlaybackTime,
@@ -53,7 +54,7 @@ export default function PlayerPage() {
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
   const [bootstrapStatus, setBootstrapStatus] =
     useState<PlaySelectStatus>(BOOTSTRAP_FALLBACK);
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const mediaRef = useRef<HTMLMediaElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
   const sessionIdRef = useRef<string | null>(initialState?.transcode_session_id ?? null);
   const seekGuardRef = useRef(false);
@@ -164,11 +165,55 @@ export default function PlayerPage() {
     }
   }, []);
 
+  const switchToFile = useCallback(
+    async (targetFileId: number) => {
+      if (!state || switchingRef.current || targetFileId === state.file_index) return;
+      switchingRef.current = true;
+      setTranscodeBusy(true);
+      setTranscodeError(null);
+      const prevSession = sessionIdRef.current;
+      const prevFileIndex = state.file_index;
+      const prevHash = state.hash;
+      try {
+        if (prevSession) await stopSession(prevSession);
+        if (hlsRef.current) {
+          hlsRef.current.destroy();
+          hlsRef.current = null;
+        }
+        attachedPlaybackUrlRef.current = null;
+        void notifyPlaybackEnded(prevHash, [prevFileIndex]).catch(() => {});
+        const res = await selectPlayFile(prevHash, targetFileId);
+        const next = toPlayerState(res);
+        setPlayerState(next);
+        sessionIdRef.current = next.transcode_session_id ?? null;
+        setSelectedAudioIndex(next.selected_audio_index ?? 0);
+        setActiveSubId("off");
+        setActiveBrowserAudio(0);
+        setPlaybackStartSec(0);
+        setTimelineSec(0);
+        setFileDurationSec(
+          resolveFileDurationSec(next.duration_sec, fileLengthBytesFromState(next)),
+        );
+        navigate(`/player/${encodeURIComponent(next.hash)}/${targetFileId}`, {
+          replace: true,
+          state: next,
+        });
+      } catch (err) {
+        setTranscodeError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setTranscodeBusy(false);
+        switchingRef.current = false;
+        seekGuardRef.current = false;
+      }
+    },
+    [navigate, state, stopSession],
+  );
+
   const attachedPlaybackUrlRef = useRef<string | null>(null);
 
   const attachHls = useCallback((url: string, force = false) => {
-    const video = videoRef.current;
-    if (!video) return;
+    const media = mediaRef.current;
+    if (!media) return;
 
     if (!force && attachedPlaybackUrlRef.current === url && hlsRef.current) {
       return;
@@ -189,7 +234,7 @@ export default function PlayerPage() {
       });
       hlsRef.current = hls;
       hls.loadSource(url);
-      hls.attachMedia(video);
+      hls.attachMedia(media);
       hls.on(Hls.Events.ERROR, (_e, data) => {
         if (
           data.fatal &&
@@ -209,19 +254,19 @@ export default function PlayerPage() {
           );
         }
       });
-    } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = url;
+    } else if (media.canPlayType("application/vnd.apple.mpegurl")) {
+      media.src = url;
     } else {
       setTranscodeError("Браузер не поддерживает HLS.");
     }
   }, []);
 
   const currentFilePositionSec = useCallback(() => {
-    const video = videoRef.current;
+    const media = mediaRef.current;
     if (showFullTimeline) {
-      return playbackStartSec + (video?.currentTime ?? 0);
+      return playbackStartSec + (media?.currentTime ?? 0);
     }
-    return video?.currentTime ?? 0;
+    return media?.currentTime ?? 0;
   }, [playbackStartSec, showFullTimeline]);
 
   const replaceTranscodeSession = useCallback(
@@ -282,9 +327,9 @@ export default function PlayerPage() {
         setTimelineSec(startSec);
         const nextUrl = absoluteMediaUrl(res.playback_url);
         attachHls(nextUrl, true);
-        const video = videoRef.current;
-        if (video) {
-          video.currentTime = 0;
+        const media = mediaRef.current;
+        if (media) {
+          media.currentTime = 0;
         }
       } catch (err) {
         setTranscodeError(err instanceof Error ? err.message : String(err));
@@ -318,11 +363,11 @@ export default function PlayerPage() {
 
   useEffect(() => {
     if (!state || hlsMode) return;
-    const video = videoRef.current;
-    if (!video) return;
+    const media = mediaRef.current;
+    if (!media) return;
 
     function syncAudioTracks() {
-      const tracks = video?.audioTracks;
+      const tracks = media?.audioTracks;
       if (!tracks || tracks.length <= 1) {
         setBrowserAudioTracks([]);
         return;
@@ -338,14 +383,14 @@ export default function PlayerPage() {
       }
     }
 
-    video.addEventListener("loadedmetadata", syncAudioTracks);
-    return () => video.removeEventListener("loadedmetadata", syncAudioTracks);
+    media.addEventListener("loadedmetadata", syncAudioTracks);
+    return () => media.removeEventListener("loadedmetadata", syncAudioTracks);
   }, [state?.stream_url, activeBrowserAudio, hlsMode, state]);
 
   useEffect(() => {
     if (!state || hlsMode) return;
-    const video = videoRef.current;
-    const tracks = video?.audioTracks;
+    const media = mediaRef.current;
+    const tracks = media?.audioTracks;
     if (!tracks || browserAudioTracks.length === 0) return;
     for (let i = 0; i < tracks.length; i++) {
       tracks[i].enabled = i === activeBrowserAudio;
@@ -384,16 +429,16 @@ export default function PlayerPage() {
 
   useEffect(() => {
     if (!showFullTimeline) return;
-    const video = videoRef.current;
-    if (!video) return;
+    const media = mediaRef.current;
+    if (!media) return;
 
     function onTimeUpdate() {
       if (scrubbingRef.current || seekGuardRef.current) return;
-      setTimelineSec(playbackStartSec + video.currentTime);
+      setTimelineSec(playbackStartSec + media.currentTime);
     }
 
-    video.addEventListener("timeupdate", onTimeUpdate);
-    return () => video.removeEventListener("timeupdate", onTimeUpdate);
+    media.addEventListener("timeupdate", onTimeUpdate);
+    return () => media.removeEventListener("timeupdate", onTimeUpdate);
   }, [playbackStartSec, showFullTimeline, state?.playback_url]);
 
   if (bootstrapping) {
@@ -468,6 +513,10 @@ export default function PlayerPage() {
 
   const copyUrl = () =>
     navigator.clipboard.writeText(hlsMode ? state.playback_url ?? "" : state.stream_url);
+
+  const prevFile = adjacentPlayableFile(state.files, state.file_index, -1);
+  const nextFile = adjacentPlayableFile(state.files, state.file_index, 1);
+  const showFileNav = playableFiles(state.files).length > 1;
 
   const showApiAudio = hlsMode && apiAudioTracks.length > 1;
   const showBrowserAudio = !hlsMode && browserAudioTracks.length > 1;
@@ -611,26 +660,73 @@ export default function PlayerPage() {
         </p>
       )}
 
+      {showFileNav && (
+        <div className="player-file-nav">
+          <button
+            type="button"
+            className="secondary"
+            disabled={!prevFile || transcodeBusy}
+            onClick={() => prevFile && void switchToFile(prevFile.id)}
+          >
+            ← Предыдущий
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={!nextFile || transcodeBusy}
+            onClick={() => nextFile && void switchToFile(nextFile.id)}
+          >
+            Следующий →
+          </button>
+        </div>
+      )}
+
       <div className={`player-wrap${isAudioOnly ? " player-wrap--audio" : ""}`}>
-        <video
-          ref={videoRef}
-          key={hlsMode ? `hls-${activeSubId}` : `${state.stream_url}-${activeSubId}`}
-          src={hlsMode ? undefined : state.stream_url}
-          controls
-          controlsList={showFullTimeline ? "noseek" : undefined}
-          autoPlay
-          crossOrigin={hlsMode ? undefined : "anonymous"}
-          {...(isAudioOnly ? { playsInline: true } : {})}
-        >
-          {activeSub?.stream_url && (
-            <track
-              kind="subtitles"
-              src={activeSub.stream_url}
-              label={activeSub.name}
-              default
-            />
-          )}
-        </video>
+        {isAudioOnly ? (
+          <audio
+            ref={mediaRef}
+            key={
+              hlsMode
+                ? `hls-audio-${state.file_index}`
+                : `${state.stream_url}-${state.file_index}`
+            }
+            src={hlsMode ? undefined : state.stream_url}
+            controls
+            controlsList={showFullTimeline ? "noseek" : undefined}
+            autoPlay
+            crossOrigin={hlsMode ? undefined : "anonymous"}
+            onEnded={() => {
+              if (nextFile) void switchToFile(nextFile.id);
+            }}
+            playsInline
+          />
+        ) : (
+          <video
+            ref={mediaRef}
+            key={
+              hlsMode
+                ? `hls-${state.file_index}-${activeSubId}`
+                : `${state.stream_url}-${state.file_index}-${activeSubId}`
+            }
+            src={hlsMode ? undefined : state.stream_url}
+            controls
+            controlsList={showFullTimeline ? "noseek" : undefined}
+            autoPlay
+            crossOrigin={hlsMode ? undefined : "anonymous"}
+            onEnded={() => {
+              if (nextFile) void switchToFile(nextFile.id);
+            }}
+          >
+            {activeSub?.stream_url && (
+              <track
+                kind="subtitles"
+                src={activeSub.stream_url}
+                label={activeSub.name}
+                default
+              />
+            )}
+          </video>
+        )}
       </div>
       <div className="actions">
         <button type="button" onClick={copyUrl}>

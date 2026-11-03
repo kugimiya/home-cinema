@@ -94,6 +94,8 @@ import com.homecinema.app.HomeCinemaApp
 import android.util.Log
 import com.homecinema.app.ui.components.LoadingOverlay
 import com.homecinema.app.ui.util.isTelevision
+import com.homecinema.app.ui.util.adjacentPlayableFile
+import com.homecinema.app.ui.util.playableMediaFiles
 import com.homecinema.app.ui.util.resolveFileDurationSec
 import com.homecinema.app.ui.util.userFacingError
 import kotlinx.coroutines.Dispatchers
@@ -109,6 +111,7 @@ fun PlayerScreen(
     fileIndex: Int,
     initialState: PlayerState?,
     onBack: () -> Unit,
+    onSwitchFile: (fileIndex: Int) -> Unit,
 ) {
     var preparing by remember { mutableStateOf(initialState == null) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -148,6 +151,7 @@ fun PlayerScreen(
     val playerViewRef = remember { mutableStateOf<PlayerView?>(null) }
     val tvControlsFocus = remember { FocusRequester() }
     val scope = rememberCoroutineScope()
+    var attachedMediaKey by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(hash, preparing) {
         if (!preparing) return@LaunchedEffect
@@ -162,11 +166,25 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(hash, fileIndex, initialState) {
-        if (initialState != null) return@LaunchedEffect
+    LaunchedEffect(hash, fileIndex) {
         preparing = true
         error = null
+        transcodeError = null
         try {
+            playerState?.let { ps ->
+                if (ps.fileIndex != fileIndex) {
+                    ps.transcodeSessionId?.let { sid ->
+                        runCatching { api.deleteTranscodeSession(sid) }
+                    }
+                    runCatching {
+                        api.playbackEnded(
+                            hash,
+                            PlaybackEndedBody(fileIds = listOf(ps.fileIndex)),
+                        )
+                    }
+                }
+            }
+            attachedMediaKey = null
             val res = api.selectPlayFile(PlaySelectBody(hash, fileIndex, videoHeight = videoHeight))
             val state = res.toPlayerState(endpoints)
             playerState = state
@@ -189,6 +207,10 @@ fun PlayerScreen(
     val state = playerState
     val isAudioOnly = state?.isAudioOnly() == true
     val hlsMode = state != null && state.playbackMode != "direct"
+    val prevPlayableFile = state?.let { adjacentPlayableFile(it.files, it.fileIndex, -1) }
+    val nextPlayableFile = state?.let { adjacentPlayableFile(it.files, it.fileIndex, 1) }
+    val showFileNav = state?.let { playableMediaFiles(it.files).size > 1 } == true
+    val fileNavEnabled = !preparing && !transcodeBusy && error == null
     LaunchedEffect(state?.durationSec, state?.fileLengthBytes) {
         val s = state ?: return@LaunchedEffect
         val resolved = resolveFileDurationSec(s.durationSec, s.fileLengthBytes)
@@ -210,10 +232,22 @@ fun PlayerScreen(
             .build()
     }
 
+    var switchingSession by remember { mutableStateOf(false) }
+
+    val stateForEnd = rememberUpdatedState(playerState)
+    val onSwitchFileState = rememberUpdatedState(onSwitchFile)
+
     DisposableEffect(exo) {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState != Player.STATE_ENDED) return
+                val ps = stateForEnd.value ?: return
+                val next = adjacentPlayableFile(ps.files, ps.fileIndex, 1) ?: return
+                onSwitchFileState.value(next.id)
             }
 
             override fun onPlayerError(playbackException: androidx.media3.common.PlaybackException) {
@@ -241,9 +275,6 @@ fun PlayerScreen(
             tvOverlayVisible = false
         }
     }
-
-    var attachedMediaKey by remember { mutableStateOf<String?>(null) }
-    var switchingSession by remember { mutableStateOf(false) }
 
     fun currentFilePositionSec(): Double =
         if (showFullTimeline) {
@@ -477,6 +508,18 @@ fun PlayerScreen(
                 .focusable()
                 .onPreviewKeyEvent { handleTvPreviewKey(it) },
         ) {
+            if (showFileNav) {
+                PlayerFileNavRow(
+                    enabled = fileNavEnabled,
+                    hasPrev = prevPlayableFile != null,
+                    hasNext = nextPlayableFile != null,
+                    onPrev = { prevPlayableFile?.let { onSwitchFile(it.id) } },
+                    onNext = { nextPlayableFile?.let { onSwitchFile(it.id) } },
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 8.dp),
+                )
+            }
             key(state.playbackUri()) {
                 PlayerViewHost(
                     exo = exo,
@@ -738,6 +781,16 @@ fun PlayerScreen(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                     )
                 }
+                if (showFileNav) {
+                    PlayerFileNavRow(
+                        enabled = fileNavEnabled,
+                        hasPrev = prevPlayableFile != null,
+                        hasNext = nextPlayableFile != null,
+                        onPrev = { prevPlayableFile?.let { onSwitchFile(it.id) } },
+                        onNext = { nextPlayableFile?.let { onSwitchFile(it.id) } },
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    )
+                }
                 Box(
                     Modifier
                         .fillMaxWidth()
@@ -778,6 +831,34 @@ fun PlayerScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun PlayerFileNavRow(
+    enabled: Boolean,
+    hasPrev: Boolean,
+    hasNext: Boolean,
+    onPrev: () -> Unit,
+    onNext: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        SecondaryButton(
+            text = "← Предыдущий",
+            enabled = enabled && hasPrev,
+            onClick = onPrev,
+            modifier = Modifier.weight(1f),
+        )
+        SecondaryButton(
+            text = "Следующий →",
+            enabled = enabled && hasNext,
+            onClick = onNext,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 

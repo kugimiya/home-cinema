@@ -129,6 +129,7 @@ export async function registerRoutes(app: FastifyInstance, ctx: AppContext): Pro
         startSec: opts.startSec ?? 0,
         videoHeight: opts.videoHeight,
         relativePath: opts.filePath,
+        fileLength: opts.fileLength,
       });
     } catch (e) {
       if (e instanceof Error && e.message.includes("лимит")) {
@@ -718,6 +719,7 @@ export async function registerRoutes(app: FastifyInstance, ctx: AppContext): Pro
         startSec: body.start_sec,
         videoHeight: body.video_height,
         relativePath: selected.path,
+        fileLength: selected.length,
       });
     } catch (e) {
       throw app.httpErrors.serviceUnavailable(String(e));

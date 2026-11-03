@@ -173,6 +173,11 @@ fun HomeNav(
                 fileIndex = fileIndex,
                 initialState = null,
                 onBack = { nav.popBackStack() },
+                onSwitchFile = { idx ->
+                    nav.navigate("player/$hash/$idx") {
+                        launchSingleTop = true
+                    }
+                },
             )
         }
     }

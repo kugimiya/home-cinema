@@ -27,6 +27,7 @@ const createSessionBody = z.object({
   audio_copy: z.boolean().optional().default(false),
   source_path: z.string().nullable().optional(),
   source_url: z.string().nullable().optional(),
+  file_length: z.number().int().nullable().optional(),
 });
 
 function resolveSourcePath(body: z.infer<typeof createSessionBody>): {
@@ -68,6 +69,7 @@ app.post("/v1/sessions", async (req, reply) => {
     const session = await mgr.create({
       sourcePath,
       sourceUrl,
+      expectedFileLength: body.file_length,
       playbackMode: body.playback_mode,
       videoCopy: body.video_copy,
       audioCopy: body.audio_copy,
