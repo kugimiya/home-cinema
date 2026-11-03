@@ -1,0 +1,40 @@
+# Optional overlay: torrent-engine on the LAN (macvlan), like VirtualBox "Bridged".
+#
+#   docker compose -f docker-compose.yml -f compose.macvlan.yml up -d
+#
+# Prerequisites (Linux, rootful Docker):
+#   - Physical NIC name in DOCKER_MACVLAN_PARENT (ip link)
+#   - Free static IP TORRENT_ENGINE_LAN_IP on your subnet
+#   - Router allows new DHCP/static clients; UPnP/NAT-PMP enabled if you use them
+#
+# torrent-engine stays on the default compose network (eth0) for torapi/orchestrator/transcoder
+# and gets a second interface on `lan` (usually eth1) with a 192.168.x.x address for BitTorrent,
+# LSD, and port mapping on the router.
+#
+# Host ↔ macvlan IP: the host often cannot reach the container's LAN IP without a macvlan shim;
+# use http://127.0.0.1:8090 or the internal service name from other containers.
+
+networks:
+  lan:
+    driver: macvlan
+    driver_opts:
+      parent: ${DOCKER_MACVLAN_PARENT:?Set DOCKER_MACVLAN_PARENT to your LAN NIC, e.g. eno1}
+    ipam:
+      driver: default
+      config:
+        - subnet: ${DOCKER_LAN_SUBNET:?Set DOCKER_LAN_SUBNET, e.g. 192.168.1.0/24}
+          gateway: ${DOCKER_LAN_GATEWAY:?Set DOCKER_LAN_GATEWAY, e.g. 192.168.1.1}
+
+services:
+  torrent-engine:
+    networks:
+      default: {}
+      lan:
+        ipv4_address: ${TORRENT_ENGINE_LAN_IP:?Set TORRENT_ENGINE_LAN_IP, e.g. 192.168.1.50}
+    ports: !override
+      - "8090:8090"
+    environment:
+      TORRENT_ENGINE_ENABLE_LSD: ${TORRENT_ENGINE_ENABLE_LSD:-true}
+      TORRENT_ENGINE_ENABLE_UPNP: ${TORRENT_ENGINE_ENABLE_UPNP:-true}
+      TORRENT_ENGINE_ENABLE_NATPMP: ${TORRENT_ENGINE_ENABLE_NATPMP:-true}
+      TORRENT_ENGINE_LISTEN_INTERFACES: ${TORRENT_ENGINE_LISTEN_INTERFACES:-eth1:6881}

@@ -437,13 +437,14 @@ void TorrentSessionManager::removeTorrent(const std::string& infoHash) {
   }
 }
 
-std::vector<double> TorrentSessionManager::fileProgressFractions(lt::torrent_handle& handle,
-                                                                 int numFiles) {
-  std::vector<double> out(numFiles, 0.0);
+std::vector<std::int64_t> TorrentSessionManager::fileProgressBytes(lt::torrent_handle& handle,
+                                                                   int numFiles) {
+  std::vector<std::int64_t> out(numFiles, 0);
   try {
-    std::vector<std::int64_t> fp = handle.file_progress(lt::torrent_handle::piece_granularity);
+    const std::vector<std::int64_t> fp =
+        handle.file_progress(lt::torrent_handle::piece_granularity);
     for (int i = 0; i < numFiles && i < static_cast<int>(fp.size()); ++i) {
-      out[i] = static_cast<double>(fp[static_cast<std::size_t>(i)]) / 1000.0;
+      out[i] = fp[static_cast<std::size_t>(i)];
     }
   } catch (...) {
   }
@@ -460,17 +461,17 @@ json TorrentSessionManager::detailUnlocked(const std::string& infoHash, TorrentS
 
   if (status.has_metadata) {
     lt::file_storage fs = fileStorage(*handle);
-    std::vector<double> progress = fileProgressFractions(*handle, fs.num_files());
+    std::vector<std::int64_t> progress = fileProgressBytes(*handle, fs.num_files());
     std::set<int> active = applyModeToScope(st.mode, st.scopeFileIds);
     bool completingAll = st.mode == TorrentMode::completing && active.empty();
     for (int idx = 0; idx < fs.num_files(); ++idx) {
       int fileIdx = idx + 1;
       std::int64_t length = fs.file_size(idx);
       torrentSize += length;
-      double frac = idx < static_cast<int>(progress.size()) ? progress[idx] : 0.0;
-      if (frac > 1.0) frac = 1.0;
-      std::int64_t downloaded = static_cast<std::int64_t>(frac * length);
+      std::int64_t downloaded =
+          idx < static_cast<int>(progress.size()) ? progress[static_cast<std::size_t>(idx)] : 0;
       if (downloaded > length) downloaded = length;
+      if (downloaded < 0) downloaded = 0;
       loadedSize += downloaded;
       int pri = st.mode == TorrentMode::seeding
                     ? PRIORITY_STREAM

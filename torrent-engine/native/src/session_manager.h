@@ -75,7 +75,7 @@ class TorrentSessionManager {
   void prioritizeByteRange(libtorrent::torrent_handle& handle, int fileIndex, int start, int end);
   std::pair<std::string, std::int64_t> resolveFilePath(const std::string& infoHash, int fileIndex);
   nlohmann::json detailUnlocked(const std::string& infoHash, TorrentState& st);
-  std::vector<double> fileProgressFractions(libtorrent::torrent_handle& handle, int numFiles);
+  std::vector<std::int64_t> fileProgressBytes(libtorrent::torrent_handle& handle, int numFiles);
   static std::string hashToHex(const libtorrent::sha1_hash& h);
   static std::string lower(std::string s);
   static nlohmann::json serializeAlert(const libtorrent::alert* a);
