@@ -90,6 +90,9 @@ export interface PlayResponse {
   selected_audio_index?: number;
   duration_sec?: number | null;
   file_length?: number | null;
+  id3_artist?: string | null;
+  id3_title?: string | null;
+  id3_album?: string | null;
 }
 
 export interface TranscodeSessionResponse {
@@ -118,6 +121,9 @@ export interface PlayerState {
   selected_audio_index: number;
   duration_sec?: number | null;
   file_length?: number | null;
+  id3_artist?: string | null;
+  id3_title?: string | null;
+  id3_album?: string | null;
 }
 
 /** Navigate from search — prepare runs on /watch */
@@ -170,6 +176,7 @@ export interface TorrentEntry {
   download_speed?: number | null;
   upload_speed?: number | null;
   total_peers?: number | null;
+  connected_seeders?: number | null;
   quality?: string | null;
   voice?: string | null;
   file_stats?: TorrentFileStat[];
@@ -542,6 +549,23 @@ export function formatSpeed(bytesPerSec?: number | null) {
   return `${formatBytes(bytesPerSec)}/s`;
 }
 
+const TORRENT_STATUS_RU: Record<string, string> = {
+  checking_files: "Проверка файлов",
+  downloading_metadata: "Загрузка метаданных",
+  downloading: "Загрузка",
+  finished: "Завершено",
+  seeding: "Раздача",
+  checking_resume_data: "Проверка resume",
+  unknown: "Неизвестно",
+  ожидание: "Ожидание",
+};
+
+export function torrentStatusLabel(stat?: string | null): string {
+  if (!stat?.trim()) return "—";
+  const normalized = stat.trim().toLowerCase();
+  return TORRENT_STATUS_RU[normalized] ?? stat;
+}
+
 export function fileStatusLabel(f: TorrentFileStat): string {
   const warm = f.warm_status ?? "off";
   if (warm === "warming") {
@@ -582,6 +606,37 @@ export function fileBasename(path: string) {
   return path.replace(/\\/g, "/").split("/").pop() ?? path;
 }
 
+/** Parse S01E01 / s1e2 style markers from a file or show title. */
+export function parseSeasonEpisode(
+  name: string,
+): { season: number; episode: number } | null {
+  const m = name.match(/[Ss](\d{1,2})[Ee](\d{1,3})/);
+  if (!m) return null;
+  return { season: Number(m[1]), episode: Number(m[2]) };
+}
+
+export type EpisodeEntry = {
+  file: TorrentMediaFile;
+  season: number;
+  episode: number;
+};
+
+export function episodeEntries(files: TorrentMediaFile[]): EpisodeEntry[] {
+  const seen = new Set<number>();
+  const entries: EpisodeEntry[] = [];
+  for (const file of playableFiles(files)) {
+    const se =
+      parseSeasonEpisode(file.name) ?? parseSeasonEpisode(fileBasename(file.path));
+    if (!se || seen.has(file.id)) continue;
+    seen.add(file.id);
+    entries.push({ file, season: se.season, episode: se.episode });
+  }
+  entries.sort(
+    (a, b) => a.season - b.season || a.episode - b.episode || a.file.id - b.file.id,
+  );
+  return entries;
+}
+
 export function videoFiles(files: TorrentMediaFile[]) {
   return files.filter((f) => f.kind === "video");
 }
@@ -612,6 +667,42 @@ export function subtitleFiles(files: TorrentMediaFile[]) {
   return files.filter((f) => f.kind === "subtitle");
 }
 
+function stripMediaExtension(name: string): string {
+  return name.replace(/\.[^.]+$/i, "");
+}
+
+/** Subtitles that belong to the currently playing video/audio file. */
+export function subtitleFilesForMedia(
+  files: TorrentMediaFile[],
+  media: TorrentMediaFile | null | undefined,
+): TorrentMediaFile[] {
+  const all = subtitleFiles(files);
+  if (!media || all.length === 0) return all;
+
+  const mediaSe =
+    parseSeasonEpisode(media.name) ?? parseSeasonEpisode(fileBasename(media.path));
+  if (mediaSe) {
+    const byEpisode = all.filter((s) => {
+      const se = parseSeasonEpisode(s.name) ?? parseSeasonEpisode(fileBasename(s.path));
+      return (
+        se != null &&
+        se.season === mediaSe.season &&
+        se.episode === mediaSe.episode
+      );
+    });
+    if (byEpisode.length > 0) return byEpisode;
+    return [];
+  }
+
+  const stem = stripMediaExtension(fileBasename(media.name)).toLowerCase();
+  if (!stem) return all;
+  const byStem = all.filter((s) => {
+    const subStem = stripMediaExtension(fileBasename(s.name)).toLowerCase();
+    return subStem === stem || subStem.startsWith(`${stem}.`) || subStem.startsWith(`${stem} `);
+  });
+  return byStem.length > 0 ? byStem : all;
+}
+
 /** Resolve API media paths against the current page origin (nginx → orchestrator). */
 export function absoluteMediaUrl(pathOrUrl: string | null | undefined): string {
   if (!pathOrUrl) return "";
@@ -619,13 +710,9 @@ export function absoluteMediaUrl(pathOrUrl: string | null | undefined): string {
     if (typeof window !== "undefined") {
       try {
         const parsed = new URL(pathOrUrl);
-        const pageHost = window.location.hostname;
-        if (
-          (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") &&
-          pageHost !== parsed.hostname
-        ) {
-          return `${window.location.origin}${parsed.pathname}${parsed.search}${parsed.hash}`;
-        }
+        // Always use the page origin so <video>/<track> stay same-origin
+        // (PUBLIC_URL may be LAN IP while the user opened localhost).
+        return `${window.location.origin}${parsed.pathname}${parsed.search}${parsed.hash}`;
       } catch {
         /* keep original */
       }
@@ -652,13 +739,18 @@ export function toPlayerState(session: PlayResponse): PlayerState {
   if (playbackMode === "direct" && !streamUrl) {
     throw new Error("Нет URL потока для выбранного файла");
   }
+  const files = session.files.map((f) =>
+    f.stream_url
+      ? { ...f, stream_url: absoluteMediaUrl(f.stream_url) }
+      : f,
+  );
   return {
     hash: session.hash,
     title: session.title,
     stream_url: streamUrl ?? "",
     file_name: fileName,
     file_index: fileIndex,
-    files: session.files,
+    files,
     playback_mode: playbackMode,
     playback_url: playbackUrl,
     transcode_session_id: session.transcode_session_id,
@@ -670,6 +762,9 @@ export function toPlayerState(session: PlayResponse): PlayerState {
       session.file_length ??
       session.files.find((f) => f.id === fileIndex)?.length ??
       null,
+    id3_artist: session.id3_artist ?? null,
+    id3_title: session.id3_title ?? null,
+    id3_album: session.id3_album ?? null,
   };
 }
 

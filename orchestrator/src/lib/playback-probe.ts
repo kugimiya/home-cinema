@@ -3,6 +3,12 @@ import { extname } from "node:path";
 import { mediaKindForPath } from "./media-files.js";
 import type { AudioTrackInfo, PlaybackMode } from "./models.js";
 
+export interface MediaTags {
+  artist: string | null;
+  title: string | null;
+  album: string | null;
+}
+
 export interface ProbeResult {
   status: "ok" | "pending";
   media_kind: "video" | "audio";
@@ -12,6 +18,7 @@ export interface ProbeResult {
   video_copy: boolean;
   audio_copy: boolean;
   duration_sec: number | null;
+  media_tags: MediaTags;
 }
 
 const BROWSER_VIDEO = new Set(["h264", "avc1", "vp9", "vp8", "av1"]);
@@ -35,6 +42,36 @@ function videoBrowserOk(codec: string, allowHevc: boolean): boolean {
 
 function audioBrowserOk(codec: string): boolean {
   return BROWSER_AUDIO.has(normCodec(codec));
+}
+
+function readTag(tags: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    for (const variant of [key, key.toUpperCase(), key.toLowerCase()]) {
+      const v = tags[variant];
+      if (v != null && String(v).trim()) return String(v).trim();
+    }
+  }
+  return null;
+}
+
+export function extractMediaTags(
+  data: Record<string, unknown>,
+  audioOrdinal = 0,
+): MediaTags {
+  const fmt = (data.format ?? {}) as Record<string, unknown>;
+  const fmtTags = (fmt.tags ?? {}) as Record<string, unknown>;
+  const streams = (data.streams ?? []) as Array<Record<string, unknown>>;
+  const audioStreams = streams.filter((s) => s.codec_type === "audio");
+  const streamTags = (audioStreams[audioOrdinal]?.tags ?? {}) as Record<string, unknown>;
+
+  const pick = (keys: string[]) =>
+    readTag(streamTags, keys) ?? readTag(fmtTags, keys);
+
+  return {
+    artist: pick(["artist", "album_artist", "albumartist"]),
+    title: pick(["title"]),
+    album: pick(["album"]),
+  };
 }
 
 function trackLabel(stream: Record<string, unknown>, ordinal: number): string {
@@ -152,6 +189,7 @@ export function parseProbePayload(
 
   const durationSec = extractDurationSec(data);
   const videoCodec = String(videoStreams[0]!.codec_name ?? "");
+  const mediaTags = extractMediaTags(data, 0);
 
   const audioTracks: AudioTrackInfo[] = audioStreams.map((stream, i) => {
     const tags = (stream.tags ?? {}) as Record<string, unknown>;
@@ -199,6 +237,7 @@ export function parseProbePayload(
       video_copy: true,
       audio_copy: true,
       duration_sec: durationSec,
+      media_tags: mediaTags,
     };
   }
 
@@ -215,6 +254,7 @@ export function parseProbePayload(
     video_copy: videoCopy,
     audio_copy: audioCopy,
     duration_sec: durationSec,
+    media_tags: mediaTags,
   };
 }
 
@@ -225,6 +265,7 @@ function parseAudioProbePayload(data: Record<string, unknown>, path: string): Pr
 
   const durationSec = extractDurationSec(data);
   const ext = extname(path).toLowerCase();
+  const mediaTags = extractMediaTags(data, 0);
 
   const audioTracks: AudioTrackInfo[] = audioStreams.map((stream, i) => {
     const tags = (stream.tags ?? {}) as Record<string, unknown>;
@@ -258,6 +299,7 @@ function parseAudioProbePayload(data: Record<string, unknown>, path: string): Pr
       video_copy: false,
       audio_copy: true,
       duration_sec: durationSec,
+      media_tags: mediaTags,
     };
   }
 
@@ -270,6 +312,7 @@ function parseAudioProbePayload(data: Record<string, unknown>, path: string): Pr
     video_copy: false,
     audio_copy: false,
     duration_sec: durationSec,
+    media_tags: mediaTags,
   };
 }
 
@@ -389,6 +432,7 @@ export async function probePlayback(opts: {
 }
 
 function pendingResult(): ProbeResult {
+  const emptyTags: MediaTags = { artist: null, title: null, album: null };
   return {
     status: "pending",
     media_kind: "video",
@@ -398,5 +442,6 @@ function pendingResult(): ProbeResult {
     video_copy: false,
     audio_copy: false,
     duration_sec: null,
+    media_tags: emptyTags,
   };
 }

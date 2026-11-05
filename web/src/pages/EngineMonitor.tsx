@@ -57,51 +57,51 @@ function TorrentDetailRow({ t }: { t: EngineTorrentLive }) {
   const files = t.file_stats ?? [];
   return (
     <tr className="engine-detail-row">
-      <td colSpan={8}>
+      <td colSpan={7}>
         <div className="engine-detail-grid">
           <div>
-            <span className="muted">hash</span>{" "}
+            <span className="muted">Хеш</span>{" "}
             <code>{t.hash}</code>
           </div>
           <div>
-            <span className="muted">save_path</span> {t.save_path ?? "—"} /{" "}
+            <span className="muted">Путь сохранения</span> {t.save_path ?? "—"} /{" "}
             {t.torrent_name ?? "—"}
           </div>
           <div>
-            <span className="muted">progress</span> {formatPct(t.progress)}
+            <span className="muted">Прогресс</span> {formatPct(t.progress)}
             {t.pieces_total != null && (
               <>
                 {" "}
-                · pieces {t.pieces_have ?? "?"}/{t.pieces_total}
-                {t.piece_length ? ` · ${formatBytes(t.piece_length)}/piece` : null}
+                · куски {t.pieces_have ?? "?"}/{t.pieces_total}
+                {t.piece_length ? ` · ${formatBytes(t.piece_length)}/куск` : null}
               </>
             )}
           </div>
           <div>
-            <span className="muted">scope</span>{" "}
+            <span className="muted">Область (scope)</span>{" "}
             {t.scope_file_ids.length ? t.scope_file_ids.join(", ") : "—"}
           </div>
           <div>
-            <span className="muted">heartbeat</span>{" "}
+            <span className="muted">Давность обновления</span>{" "}
             {t.last_heartbeat_age_sec != null
               ? `${t.last_heartbeat_age_sec.toFixed(0)} с назад`
               : "—"}
           </div>
           <div>
-            <span className="muted">sequential</span>{" "}
+            <span className="muted">Последовательная загрузка</span>{" "}
             {t.sequential_download ? "да" : "нет"}
           </div>
           <div>
-            <span className="muted">↓ lifetime</span>{" "}
+            <span className="muted">Скачано за всё время</span>{" "}
             {formatBytes(t.all_time_download)}
           </div>
           <div>
-            <span className="muted">↑ lifetime</span>{" "}
+            <span className="muted">Отдано за всё время</span>{" "}
             {formatBytes(t.bytes_written_data)}
           </div>
           {t.error ? (
             <div className="engine-error-inline">
-              <span className="muted">error</span> {t.error}
+              <span className="muted">Ошибка</span> {t.error}
             </div>
           ) : null}
         </div>

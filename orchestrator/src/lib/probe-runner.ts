@@ -5,6 +5,7 @@ import { progressFromCache } from "./file-progress.js";
 import { findTorrentMediaFile } from "./media-paths.js";
 import {
   ffprobePath,
+  extractMediaTags,
   parseProbePayload,
   probePlayback,
   resolveProbeDuration,
@@ -27,6 +28,10 @@ export function durationLikelyIncomplete(
   const megabytes = fileLength / (1024 * 1024);
   const expectedMin = Math.max(60, megabytes * 1.5);
   return durationSec < expectedMin;
+}
+
+function mediaTagsEmpty(tags: { artist: string | null; title: string | null; album: string | null }): boolean {
+  return !tags.artist && !tags.title && !tags.album;
 }
 
 export class ProbeRunner {
@@ -163,6 +168,30 @@ export class ProbeRunner {
     });
   }
 
+  private async enrichMediaTagsFromDisk(
+    infoHash: string,
+    fileId: number,
+    filePath: string,
+    cached: ProbeResult,
+  ): Promise<ProbeResult> {
+    if (!mediaTagsEmpty(cached.media_tags)) return cached;
+    const localMedia = findTorrentMediaFile(this.torrentsRoot, filePath);
+    if (!localMedia) return cached;
+    try {
+      const data = await ffprobePath(
+        localMedia,
+        Math.min(30, this.settings.transcodeProbeTimeout),
+      );
+      const tags = extractMediaTags(data, 0);
+      if (mediaTagsEmpty(tags)) return cached;
+      this.store.updateMediaTags(infoHash, fileId, tags);
+      return { ...cached, media_tags: tags };
+    } catch (e) {
+      console.info(`probe tag enrich failed ${infoHash.slice(0, 8)} file ${fileId}:`, e);
+      return cached;
+    }
+  }
+
   async probeFile(
     infoHash: string,
     fileId: number,
@@ -185,6 +214,7 @@ export class ProbeRunner {
     if (cached && !durationLikelyIncomplete(cached.duration_sec, fileLength)) {
       console.info(`probe cache hit ${h.slice(0, 8)} file ${fileId}`);
       opts.onLive?.(newProbeLiveStats({ subphase: "cache" }));
+      cached = await this.enrichMediaTagsFromDisk(h, fileId, filePath, cached);
       return cached;
     }
     if (cached) {

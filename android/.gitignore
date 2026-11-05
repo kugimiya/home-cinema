@@ -5,3 +5,5 @@
 *.iml
 /captures/
 /app/build/
+logs/
+debug-logs/

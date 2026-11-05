@@ -99,6 +99,14 @@ export async function registerRoutes(app: FastifyInstance, ctx: AppContext): Pro
     });
   }
 
+  function id3FromProbe(probe: ProbeResult) {
+    return {
+      id3_artist: probe.media_tags.artist,
+      id3_title: probe.media_tags.title,
+      id3_album: probe.media_tags.album,
+    };
+  }
+
   async function createTranscodePlayback(opts: {
     infoHash: string;
     fileIndex: number;
@@ -184,6 +192,7 @@ export async function registerRoutes(app: FastifyInstance, ctx: AppContext): Pro
       selected_audio_index: opts.audioIndex ?? 0,
       duration_sec: opts.probe.duration_sec,
       file_length: opts.fileLength ?? null,
+      ...id3FromProbe(opts.probe),
     };
   }
 
@@ -226,6 +235,7 @@ export async function registerRoutes(app: FastifyInstance, ctx: AppContext): Pro
       selected_audio_index: opts.audioIndex ?? 0,
       duration_sec: probe.duration_sec,
       file_length: selected.length,
+      ...id3FromProbe(probe),
     };
 
     const useDirect =

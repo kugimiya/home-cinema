@@ -16,6 +16,34 @@ describe("parseProbePayload audio", () => {
     expect(result.audio_copy).toBe(false);
   });
 
+  it("reads id3-style tags from format and stream", () => {
+    const result = parseProbePayload(
+      {
+        format: {
+          duration: "240.0",
+          format_name: "flac",
+          tags: {
+            artist: "Roger Nichols",
+            album: "A&M Composers Series Vol.3",
+          },
+        },
+        streams: [
+          {
+            codec_type: "audio",
+            codec_name: "flac",
+            index: 0,
+            tags: { title: "I Won't Last A Day Without You" },
+          },
+        ],
+      },
+      "music/album.flac",
+      false,
+    );
+    expect(result.media_tags.artist).toBe("Roger Nichols");
+    expect(result.media_tags.title).toBe("I Won't Last A Day Without You");
+    expect(result.media_tags.album).toBe("A&M Composers Series Vol.3");
+  });
+
   it("mp3 direct when single track", () => {
     const result = parseProbePayload(
       {

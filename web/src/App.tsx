@@ -1,7 +1,7 @@
 import { NavLink, Route, Routes } from "react-router-dom";
 import ServiceStatusBar from "./components/ServiceStatusBar";
 import MainTabs from "./layout/MainTabs";
-import PlayerPage from "./pages/Player";
+import PlayerRoute from "./pages/PlayerRoute";
 import WatchPreparePage from "./pages/WatchPrepare";
 import WatchSelectPage from "./pages/WatchSelect";
 import EngineMonitorPage from "./pages/EngineMonitor";
@@ -26,7 +26,7 @@ export default function App() {
         <Route path="/library" element={<MainTabs />} />
         <Route path="/watch/prepare/:provider/:externalId" element={<WatchPreparePage />} />
         <Route path="/watch/:infoHash" element={<WatchSelectPage />} />
-        <Route path="/player/:infoHash/:fileIndex" element={<PlayerPage />} />
+        <Route path="/player/:infoHash/:fileIndex" element={<PlayerRoute />} />
         <Route path="/engine" element={<EngineMonitorPage />} />
       </Routes>
     </div>

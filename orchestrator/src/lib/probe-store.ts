@@ -4,7 +4,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AudioTrackInfo } from "./models.js";
 import { mediaKindForPath } from "./media-files.js";
-import type { ProbeResult } from "./playback-probe.js";
+import type { MediaTags, ProbeResult } from "./playback-probe.js";
 
 export function defaultWarmHeadBytes(
   filePath: string,
@@ -42,6 +42,44 @@ export class ProbeCacheStore {
         PRIMARY KEY (info_hash, file_id)
       );
     `);
+    this.ensureMediaTagsColumn();
+  }
+
+  private ensureMediaTagsColumn(): void {
+    const cols = this.db.prepare("PRAGMA table_info(file_probe_cache)").all() as {
+      name: string;
+    }[];
+    if (!cols.some((c) => c.name === "media_tags_json")) {
+      this.db.exec(`ALTER TABLE file_probe_cache ADD COLUMN media_tags_json TEXT`);
+    }
+  }
+
+  private parseMediaTagsJson(raw: unknown): MediaTags {
+    if (raw == null || raw === "") {
+      return { artist: null, title: null, album: null };
+    }
+    try {
+      const data = JSON.parse(String(raw)) as Partial<MediaTags>;
+      return {
+        artist: data.artist ?? null,
+        title: data.title ?? null,
+        album: data.album ?? null,
+      };
+    } catch {
+      return { artist: null, title: null, album: null };
+    }
+  }
+
+  updateMediaTags(
+    infoHash: string,
+    fileId: number,
+    tags: MediaTags,
+  ): void {
+    this.db
+      .prepare(
+        "UPDATE file_probe_cache SET media_tags_json = ?, updated_at = CURRENT_TIMESTAMP WHERE info_hash = ? AND file_id = ?",
+      )
+      .run(JSON.stringify(tags), infoHash.toLowerCase(), fileId);
   }
 
   getWarmHeadBytes(infoHash: string, fileId: number): number | null {
@@ -77,6 +115,7 @@ export class ProbeCacheStore {
       video_copy: Boolean(row.video_copy),
       audio_copy: Boolean(row.audio_copy),
       duration_sec: row.duration_sec != null ? Number(row.duration_sec) : null,
+      media_tags: this.parseMediaTagsJson(row.media_tags_json),
     };
   }
 
@@ -90,13 +129,15 @@ export class ProbeCacheStore {
   ): void {
     if (result.status !== "ok") return;
     const tracksJson = JSON.stringify(result.audio_tracks);
+    const tagsJson = JSON.stringify(result.media_tags);
     this.db
       .prepare(
         `INSERT INTO file_probe_cache (
           info_hash, file_id, file_path, file_length,
           playback_mode, direct_playable, video_copy, audio_copy,
-          duration_sec, audio_tracks_json, warm_head_bytes, needs_stream_tail
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          duration_sec, audio_tracks_json, warm_head_bytes, needs_stream_tail,
+          media_tags_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(info_hash, file_id) DO UPDATE SET
           file_path=excluded.file_path,
           file_length=excluded.file_length,
@@ -112,6 +153,7 @@ export class ProbeCacheStore {
           audio_tracks_json=excluded.audio_tracks_json,
           warm_head_bytes=excluded.warm_head_bytes,
           needs_stream_tail=excluded.needs_stream_tail,
+          media_tags_json=excluded.media_tags_json,
           updated_at=CURRENT_TIMESTAMP`,
       )
       .run(
@@ -127,6 +169,7 @@ export class ProbeCacheStore {
         tracksJson,
         Math.max(0, opts.warmHeadBytes),
         opts.needsStreamTail ? 1 : 0,
+        tagsJson,
       );
   }
 

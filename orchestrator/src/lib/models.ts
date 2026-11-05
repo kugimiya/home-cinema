@@ -134,6 +134,9 @@ export const PlayResponseSchema = z.object({
   selected_audio_index: z.number().default(0),
   duration_sec: z.number().nullable().optional(),
   file_length: z.number().nullable().optional(),
+  id3_artist: z.string().nullable().optional(),
+  id3_title: z.string().nullable().optional(),
+  id3_album: z.string().nullable().optional(),
 });
 
 export const PlaySelectStatusResponseSchema = z.object({

@@ -9,3 +9,4 @@ web/dist/
 .DS_Store
 *.sqlite3
 .vscode
+.cursor

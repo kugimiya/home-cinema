@@ -7,22 +7,16 @@ import {
   formatBytes,
   formatSpeed,
   listTorrents,
+  torrentStatusLabel,
   pauseTorrentDownload,
   startWarmProbe,
   type StorageSummary,
   type TorrentEntry,
   type TorrentFileStat,
 } from "../api/client";
-import MagnetAddForm from "../components/MagnetAddForm";
 import { useUiStore } from "../state/uiStore";
 
 const LIBRARY_SCROLL_KEY = "home-cinema.library.scrollY";
-
-function formatPeerSummary(t: TorrentEntry): string {
-  const peers = t.total_peers ?? 0;
-  const seeds = t.connected_seeders ?? 0;
-  return `${peers} пир. / ${seeds} сид.`;
-}
 
 function torrentTitleTooltip(t: TorrentEntry, fileCount: number): string {
   const parts = [t.title];
@@ -85,7 +79,7 @@ function TorrentActionsMenu({
           setOpen((v) => !v);
         }}
       >
-        ⋮
+        Действия
       </button>
       {open && (
         <div className="library-actions-dropdown" role="menu">
@@ -287,9 +281,6 @@ export default function LibraryPage() {
 
   return (
     <div className="library-page">
-      <h1>Библиотека / раздача</h1>
-      <p className="muted">Торренты остаются до ручного удаления. Обновление каждые 15 с.</p>
-
       {storage && (
         <div className="storage-bar">
           <div className="storage-stat">
@@ -307,15 +298,13 @@ export default function LibraryPage() {
         </div>
       )}
 
-      <MagnetAddForm compact />
-
       <button
         type="button"
         className="secondary"
         onClick={() => refreshList()}
         disabled={loading}
       >
-        Обновить
+        Обновить данные на странице
       </button>
       {error && <p className="error">{error}</p>}
       {loading && torrents.length === 0 ? (
@@ -326,15 +315,17 @@ export default function LibraryPage() {
         <table className="library-table">
           <thead>
             <tr>
-              <th aria-label="Развернуть" />
+              <th>Файлы</th>
+              <th>Действия</th>
               <th>Название</th>
               <th>Статус</th>
               <th>Размер</th>
               <th>На диске</th>
               <th title="Текущая скорость загрузки">Загрузка</th>
               <th title="Текущая скорость отдачи">Отдача</th>
-              <th title="Подключённые пиры / сиды в swarm (libtorrent)">Пиры / сиды</th>
-              <th aria-label="Действия" />
+              <th title="Объём отданных данных за всё время">Отдано</th>
+              <th title="Сиды в swarm (libtorrent)">Раздающие</th>
+              <th title="Подключённые пиры (libtorrent)">Качающие</th>
             </tr>
           </thead>
           <tbody>
@@ -351,30 +342,17 @@ export default function LibraryPage() {
                         aria-expanded={isOpen}
                         disabled={files.length === 0}
                         onClick={() => void onToggleExpanded(t.hash)}
-                        title={files.length ? "Файлы раздачи" : "Нет списка файлов"}
+                        title={
+                          files.length
+                            ? isOpen
+                              ? "Свернуть список файлов"
+                              : "Показать файлы раздачи"
+                            : "Нет списка файлов"
+                        }
                       >
-                        {files.length === 0 ? "·" : isOpen ? "▼" : "▶"}
+                        Файлы
                       </button>
                     </td>
-                    <td className="library-name-col">
-                      <div
-                        className="library-title-ellipsis"
-                        title={torrentTitleTooltip(t, files.length)}
-                      >
-                        {t.title}
-                      </div>
-                    </td>
-                    <td>
-                      {t.stat_string || "—"}
-                      {t.warm_summary && (
-                        <div className="muted">{t.warm_summary}</div>
-                      )}
-                    </td>
-                    <td>{formatBytes(t.torrent_size ?? t.loaded_size)}</td>
-                    <td>{formatBytes(t.on_disk_bytes ?? t.loaded_size ?? t.preloaded_bytes)}</td>
-                    <td>{formatSpeedCell(t.download_speed)}</td>
-                    <td>{formatSpeedCell(t.upload_speed)}</td>
-                    <td>{formatPeerSummary(t)}</td>
                     <td>
                       <TorrentActionsMenu
                         t={t}
@@ -385,10 +363,35 @@ export default function LibraryPage() {
                         onDelete={() => void onDelete(t.hash, t.title)}
                       />
                     </td>
+                    <td className="library-name-col">
+                      <div
+                        className="library-title-ellipsis"
+                        title={torrentTitleTooltip(t, files.length)}
+                      >
+                        {t.title}
+                      </div>
+                    </td>
+                    <td>
+                      {torrentStatusLabel(t.stat_string)}
+                      {t.warm_summary && (
+                        <div className="muted">{t.warm_summary}</div>
+                      )}
+                    </td>
+                    <td>{formatBytes(t.torrent_size ?? t.loaded_size)}</td>
+                    <td>{formatBytes(t.on_disk_bytes ?? t.loaded_size ?? t.preloaded_bytes)}</td>
+                    <td>{formatSpeedCell(t.download_speed)}</td>
+                    <td>{formatSpeedCell(t.upload_speed)}</td>
+                    <td>
+                      {(t.uploaded_bytes ?? 0) > 0
+                        ? formatBytes(t.uploaded_bytes)
+                        : "—"}
+                    </td>
+                    <td>{t.connected_seeders ?? 0}</td>
+                    <td>{t.total_peers ?? 0}</td>
                   </tr>
                   {isOpen && files.length > 0 && (
                     <tr key={`${t.hash}-files`} className="files-row">
-                      <td colSpan={9}>
+                      <td colSpan={11}>
                         <div className="torrent-files">
                           {(t.on_disk_bytes ?? 0) > 0 &&
                             files.every((f) => f.downloaded_bytes === 0) && (
